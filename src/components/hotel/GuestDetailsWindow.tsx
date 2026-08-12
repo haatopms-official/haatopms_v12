@@ -3,7 +3,9 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { HotelDatePicker } from './HotelDatePicker';
 import { CountrySelect } from './CountrySelect';
-import { useSharedNamespace } from '@/hooks/useSharedNamespace';
+import { usePassport } from '@/hooks/usePassport';
+import { useCountries } from '@/hooks/useCountries';
+import { Passport, PASSPORT_FIELDS, passportProgress, Gender } from '@/types/passport';
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 import {
   Activity,
@@ -17,7 +19,6 @@ import {
   IdCard,
   Instagram,
   Mail,
-  // MapPin removed with address field
   MessageCircle,
   Phone,
   Send,
@@ -33,6 +34,7 @@ interface GuestDetailsWindowProps {
   open: boolean;
   onClose: () => void;
   guest: {
+    guestUid?: string;
     bookingId?: string;
     fullName: string;
     initials: string;
@@ -64,52 +66,27 @@ interface GuestDetailsWindowProps {
 
 type ContactIcon = typeof Phone;
 
-const PASSPORT_FIELDS = [
-  { key: 'lastName', label: 'Фамилия', placeholder: 'Иванов', icon: IdCard, span: 1 },
-  { key: 'firstName', label: 'Имя', placeholder: 'Иван', icon: IdCard, span: 1 },
-  { key: 'middleName', label: 'Отчество', placeholder: 'Иванович', icon: IdCard, span: 1 },
-  { key: 'birthDate', label: 'Дата рождения', placeholder: 'дд.мм.гггг', icon: CalendarDays, span: 1, type: 'date' },
-  { key: 'issueDate', label: 'Дата выдачи', placeholder: 'дд.мм.гггг', icon: CalendarDays, span: 1, type: 'date' },
-  { key: 'citizenship', label: 'Гражданство', placeholder: 'Узбекистан', icon: Flag, span: 1 },
+const PASSPORT_FORM_CONFIG = [
+  { key: 'last_name', label: 'Фамилия', placeholder: 'Иванов', icon: IdCard, span: 1 },
+  { key: 'first_name', label: 'Имя', placeholder: 'Иван', icon: IdCard, span: 1 },
+  { key: 'middle_name', label: 'Отчество', placeholder: 'Иванович', icon: IdCard, span: 1 },
+  { key: 'birth_date', label: 'Дата рождения', placeholder: 'дд.мм.гггг', icon: CalendarDays, span: 1, type: 'date' },
+  { key: 'issue_date', label: 'Дата выдачи', placeholder: 'дд.мм.гггг', icon: CalendarDays, span: 1, type: 'date' },
+  { key: 'citizenship', label: 'Гражданство', placeholder: 'TJ', icon: Flag, span: 1 },
   { key: 'gender', label: 'Пол', placeholder: 'Select gender', icon: Users, span: 1 },
 ] as const;
 
-type PassportKey = (typeof PASSPORT_FIELDS)[number]['key'];
-type PassportData = Record<PassportKey, string>;
-
-const EMPTY_PASSPORT: PassportData = PASSPORT_FIELDS.reduce(
-  (acc, f) => ({ ...acc, [f.key]: '' }),
-  {} as PassportData,
-);
-
-// Gender dropdown options (Пол). Keep canonical Russian values as the stored
-// text so all shared consumers (booking, anketa, guest details) render the
-// same label without needing translation lookups.
-const GENDER_OPTIONS: { value: string; label: string; icon: string }[] = [
-  { value: 'Male', label: 'Male', icon: '♂' },
-  { value: 'Female', label: 'Female', icon: '♀' },
-  { value: 'Non-binary', label: 'Non-binary', icon: '⚧' },
+const GENDER_OPTIONS: { value: Gender; label: string; icon: string }[] = [
+  { value: 'male', label: 'Male', icon: '♂' },
+  { value: 'female', label: 'Female', icon: '♀' },
 ];
 
-function GenderSelect({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+function GenderSelect({ value, onChange, placeholder }: { value: Gender | null; onChange: (v: Gender | null) => void; placeholder?: string }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
-  // Accept legacy Russian values so previously saved records still resolve.
-  const legacyMap: Record<string, string> = {
-    'Мужской': 'Male', 'М': 'Male', 'Мужчина': 'Male',
-    'Женский': 'Female', 'Ж': 'Female', 'Женщина': 'Female',
-    'Небинарный': 'Non-binary',
-  };
-  const normalized = legacyMap[value] ?? value;
-  const current = GENDER_OPTIONS.find((o) => o.value === normalized);
+
+  const current = GENDER_OPTIONS.find((o) => o.value === value);
+
   return (
     <div ref={ref} className="relative">
       <button
@@ -128,7 +105,7 @@ function GenderSelect({ value, onChange, placeholder }: { value: string; onChang
       {open && (
         <div className="absolute left-0 right-0 top-full z-[95] mt-2 overflow-hidden rounded-2xl border border-border/60 bg-popover p-1.5 shadow-2xl shadow-primary/15">
           {GENDER_OPTIONS.map((o) => {
-            const active = o.value === normalized;
+            const active = o.value === value;
             return (
               <button
                 key={o.value}
@@ -150,98 +127,55 @@ function GenderSelect({ value, onChange, placeholder }: { value: string; onChang
 
 export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowProps) {
   const [confirmClose, setConfirmClose] = useState(false);
-  // Track whether the operator actually edited a passport field. The
-  // "Save this guest view?" prompt must only appear when there are unsaved
-  // edits — closing an unchanged panel should exit immediately.
   const dirtyRef = useRef(false);
+
+  // Hook integrations
+  const { passport, save } = usePassport(guest.guestUid);
+  const { data: countries = [] } = useCountries();
+
+  // Local state buffers for smooth text input editing
+  const [formState, setFormState] = useState<Partial<Passport>>({});
+
   useEffect(() => {
-    if (open) dirtyRef.current = false;
-  }, [open, guest.bookingId]);
-
-  // Persist passport entry per BOOKING id so it follows the booking across
-  // every panel (admin / director / superuser) and modal (Anketa). We use the
-  // bare booking id as the key so the Anketa modal (which reads
-  // `passportMap[booking.id]`) sees the same record instantly. Falls back to
-  // a room/bed key for legacy callers that didn't pass an id.
-  const storageKey = guest.bookingId
-    ? guest.bookingId
-    : `guest-passport:${guest.roomNumber}:${guest.bedIndex ?? 'main'}`;
-
-  // Build the auto-prefilled view of the passport. We never overwrite a value
-  // the user already typed — we only fill the field if it is currently empty.
-  const buildAutoFill = (current: PassportData): PassportData => {
-    const auto: Partial<PassportData> = {
-      lastName: guest.guestLastName ?? '',
-      firstName: guest.guestFirstName ?? '',
-      middleName: guest.guestMiddleName ?? '',
-    };
-    const next = { ...current };
-    (Object.keys(auto) as PassportKey[]).forEach((k) => {
-      const v = (auto[k] ?? '').toString().trim();
-      if (v && !(next[k] ?? '').trim()) next[k] = v;
-    });
-    return next;
-  };
-
-const { map: passportMap, setRecord: setPassportRecord } = useSharedNamespace('passports', 'sayohat-passport-changed');
-
-  const [passport, setPassport] = useState<PassportData>(EMPTY_PASSPORT);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const normalize = (parsed: Record<string, string>) => {
-      const legacySeries = (parsed.passportSeries || '').toString().trim().toUpperCase();
-      const legacyNumber = (parsed.passportNumber || '').toString().trim();
-      if (legacySeries && !/^[A-Z\u0400-\u04FF]{1,2}\s/.test(legacyNumber)) {
-        const digits = legacyNumber.replace(/\D/g, '');
-        parsed.passportSeries = legacySeries.slice(0, 2);
-        parsed.passportNumber = digits;
-      }
-      return { ...EMPTY_PASSPORT, ...(parsed as Partial<PassportData>) };
-    };
-
-    const cloud = passportMap[storageKey] as Record<string, string> | undefined;
-    if (cloud) {
-      setPassport(buildAutoFill(normalize({ ...cloud })));
-      return;
+    if (passport) {
+      setFormState(passport);
+    } else {
+      setFormState({
+        last_name: guest.guestLastName || '',
+        first_name: guest.guestFirstName || '',
+        middle_name: guest.guestMiddleName || '',
+        citizenship: 'TJ',
+      });
     }
-    try {
-      const raw = window.localStorage.getItem(storageKey);
-      if (raw) {
-        const parsed = normalize(JSON.parse(raw) as Record<string, string>);
-        setPassport(buildAutoFill(parsed));
-        setPassportRecord(storageKey, parsed);
-        return;
-      }
-    } catch { /* ignore */ }
-    setPassport(buildAutoFill(EMPTY_PASSPORT));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storageKey, guest.guestLastName, guest.guestFirstName, guest.guestMiddleName, passportMap[storageKey]]);
+  }, [passport, guest.guestLastName, guest.guestFirstName, guest.guestMiddleName]);
 
-  const updatePassport = (key: PassportKey, value: string) => {
-    setPassport((prev) => {
-      const next = { ...prev, [key]: value };
-      setPassportRecord(storageKey, next);
-      try { window.localStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* ignore quota errors */ }
-      return next;
-    });
+  const handleFieldChange = (field: keyof Passport, value: any) => {
     dirtyRef.current = true;
+    setFormState((prev) => ({ ...prev, [field]: value }));
   };
-  const filledPassportCount = (Object.values(passport) as string[]).filter((v) => v.trim().length > 0).length;
+
+  const handleSaveField = (field: keyof Passport, value: any) => {
+    save.mutate({
+      ...passport,
+      ...formState,
+      [field]: value || null,
+    });
+  };
 
   const nights = Number.isInteger(guest.nightsDisplay) ? guest.nightsDisplay : guest.nightsDisplay.toFixed(1);
-  const contacts: { label: string; value: string; icon: ContactIcon }[] = [
+  const contacts = [
     { label: 'Phone', value: guest.guestPhone, icon: Phone },
     { label: 'WhatsApp', value: guest.guestWhatsapp, icon: MessageCircle },
     { label: 'Telegram', value: guest.guestTelegram, icon: Send },
     { label: 'Instagram', value: guest.guestInstagram, icon: Instagram },
     { label: 'Email', value: guest.guestEmail, icon: Mail },
   ].filter((row) => row.value.trim());
+
   const requestClose = () => {
-    // No unsaved edits → close immediately without the confirm overlay.
     if (!dirtyRef.current) { onClose(); return; }
     setConfirmClose(true);
   };
-  const finishClose = () => { setConfirmClose(false); onClose(); };
+  const finishClose = () => { setConfirmClose(false); dirtyRef.current = false; onClose(); };
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && requestClose()}>
@@ -382,12 +316,13 @@ const { map: passportMap, setRecord: setPassportRecord } = useSharedNamespace('p
                       Паспортные данные · Passport
                     </div>
                     <span className="inline-flex items-center gap-1 rounded-full border-2 border-primary/40 bg-primary/10 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-primary">
-                      <Check className="h-3 w-3" /> {filledPassportCount}/{PASSPORT_FIELDS.length}
+                      <Check className="h-3 w-3" /> {passportProgress(formState)}
                     </span>
                   </div>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {PASSPORT_FIELDS.map((f, idx) => {
+                    {PASSPORT_FORM_CONFIG.map((f, idx) => {
                       const Icon = f.icon;
+                      const key = f.key as keyof Passport;
                       return (
                         <motion.div
                           key={f.key}
@@ -403,28 +338,38 @@ const { map: passportMap, setRecord: setPassportRecord } = useSharedNamespace('p
                           {'type' in f && f.type === 'date' ? (
                             <HotelDatePicker
                               label={f.label}
-                              value={passport[f.key]}
-                              onChange={(value) => updatePassport(f.key, value)}
+                              value={(formState[key] as string) ?? ''}
+                              onChange={(value) => {
+                                handleFieldChange(key, value);
+                                handleSaveField(key, value);
+                              }}
                               compact
                               showLabel={false}
                             />
                           ) : f.key === 'citizenship' ? (
                             <CountrySelect
-                              value={passport[f.key]}
-                              onChange={(value) => updatePassport(f.key, value)}
+                              value={(formState[key] as string) ?? 'TJ'}
+                              onChange={(value) => {
+                                handleFieldChange(key, value);
+                                handleSaveField(key, value);
+                              }}
                               placeholder={f.placeholder}
                               compact
                             />
                           ) : f.key === 'gender' ? (
                             <GenderSelect
-                              value={passport[f.key]}
-                              onChange={(value) => updatePassport(f.key, value)}
+                              value={(formState[key] as Gender) ?? null}
+                              onChange={(value) => {
+                                handleFieldChange(key, value);
+                                handleSaveField(key, value);
+                              }}
                               placeholder={f.placeholder}
                             />
                           ) : (
                             <input
-                              value={passport[f.key]}
-                              onChange={(e) => updatePassport(f.key, e.target.value.slice(0, 28))}
+                              value={(formState[key] as string) ?? ''}
+                              onChange={(e) => handleFieldChange(key, e.target.value)}
+                              onBlur={(e) => handleSaveField(key, e.target.value)}
                               placeholder={f.placeholder}
                               maxLength={28}
                               className="anketa-line-input input-focus-glow"
