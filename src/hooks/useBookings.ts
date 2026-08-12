@@ -3,7 +3,7 @@ import { differenceInCalendarDays, parseISO, startOfDay } from 'date-fns';
 import { toast } from 'sonner';
 import { Booking } from '@/types/hotel';
 import { supabase } from '@/integrations/supabase/client';
-import { bookingToRow, rowToBooking } from '@/lib/bookingsMapper';
+import { bookingToRow, guestArgs, rowToBooking } from '@/lib/sheetMapper';
 import { useI18n } from './useI18n';
 
 /* ---------------- overlap detection (unchanged logic) ---------------- */
@@ -36,7 +36,7 @@ function findConflict(list: Booking[], candidate: Booking) {
   return list.find((b) => bookingsConflict(b, candidate));
 }
 
-/* ---------------- Supabase-backed bookings ---------------- */
+/* ---------------- Supabase-backed bookings with Guest Linking ---------------- */
 export function useBookings() {
   const { t } = useI18n();
   const [bookings, setBookings] = useState<Booking[]>([]);
@@ -48,11 +48,24 @@ export function useBookings() {
     listRef.current = next;
   }, []);
 
-  // 1) initial load from Supabase
+  // Helper write function: resolves/creates the guest first, then writes the stay
+  const persistBooking = useCallback(async (b: Booking, updatedBy?: string) => {
+    // 1) link/create the person in the MAIN table
+    const { data: mainId, error: gErr } = await supabase.rpc('upsert_guest', guestArgs(b));
+    if (gErr) throw gErr;
+
+    // 2) write the stay, referencing the main table
+    const { error: bErr } = await supabase
+      .from('bookings')
+      .upsert(bookingToRow(b, mainId as string, updatedBy), { onConflict: 'booking_uid' });
+    if (bErr) throw bErr;
+  }, []);
+
+  // 1) initial load — join the main table so contacts come along
   const reload = useCallback(async () => {
     const { data, error } = await supabase
       .from('bookings')
-      .select('*')
+      .select('*, guests:main_id ( main_id, fio, tel, whats, email, telega, inst, guest_kind )')
       .order('no', { ascending: true });
     if (error) { console.error('[bookings] load', error); return; }
     applyLocal((data ?? []).map((r) => rowToBooking(r as Record<string, unknown>)));
@@ -60,27 +73,16 @@ export function useBookings() {
 
   useEffect(() => { void reload(); }, [reload]);
 
-  // 2) realtime — every INSERT/UPDATE/DELETE from ANY user/browser/IP
+  // 2) realtime — subscribe to changes on both bookings and guests tables
   useEffect(() => {
-    const channel = supabase
-      .channel('public:bookings')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, (payload) => {
-        const list = listRef.current;
-        if (payload.eventType === 'DELETE') {
-          const uid = String((payload.old as Record<string, unknown>)?.['booking_uid'] ?? '');
-          applyLocal(list.filter((b) => b.id !== uid));
-          return;
-        }
-        const row = payload.new as Record<string, unknown>;
-        const incoming = rowToBooking(row);
-        const idx = list.findIndex((b) => b.id === incoming.id);
-        applyLocal(idx === -1
-          ? [...list, incoming]
-          : list.map((b) => (b.id === incoming.id ? incoming : b)));
-      })
+    const ch = supabase
+      .channel('sheet-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, reload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'guests' }, reload)
       .subscribe();
-    return () => { void supabase.removeChannel(channel); };
-  }, [applyLocal]);
+
+    return () => { void supabase.removeChannel(ch); };
+  }, [reload]);
 
   // 3) refetch when the tab regains focus (covers dropped sockets)
   useEffect(() => {
@@ -101,15 +103,16 @@ export function useBookings() {
     }
     applyLocal([...listRef.current, booking]);
     void (async () => {
-      const { error } = await supabase.from('bookings').insert(bookingToRow(booking));
-      if (error) {
+      try {
+        await persistBooking(booking);
+      } catch (error) {
         console.error('[bookings] insert', error);
         toast.error('Save failed — reloading');
         void reload();
       }
     })();
     return true;
-  }, [applyLocal, reload, t]);
+  }, [applyLocal, persistBooking, reload, t]);
 
   const updateBooking = useCallback((id: string, updates: Partial<Booking>) => {
     const target = listRef.current.find((b) => b.id === id);
@@ -121,22 +124,21 @@ export function useBookings() {
     }
     applyLocal(listRef.current.map((b) => (b.id === id ? candidate : b)));
     void (async () => {
-      const { error } = await supabase
-        .from('bookings')
-        .update(bookingToRow(candidate))
-        .eq('booking_uid', id);
-      if (error) {
+      try {
+        await persistBooking(candidate);
+      } catch (error) {
         console.error('[bookings] update', error);
         toast.error('Update failed — reloading');
         void reload();
       }
     })();
     return true;
-  }, [applyLocal, reload, t]);
+  }, [applyLocal, persistBooking, reload, t]);
 
   const removeBooking = useCallback((id: string) => {
     applyLocal(listRef.current.filter((b) => b.id !== id));
     void (async () => {
+      // Delete path — never delete the guest, only the stay
       const { error } = await supabase.from('bookings').delete().eq('booking_uid', id);
       if (error) {
         console.error('[bookings] delete', error);
