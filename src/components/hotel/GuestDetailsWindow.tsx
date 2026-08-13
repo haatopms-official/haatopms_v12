@@ -134,30 +134,67 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
   const { data: countries = [] } = useCountries();
 
   // Local state buffers for smooth text input editing
-  const [formState, setFormState] = useState<Partial<Passport>>({});
+  const [passportData, setPassport] = useState<PassportData>(EMPTY_PASSPORT);
+  const hydrated = useRef<string | null>(null);
 
   useEffect(() => {
-    if (passport) {
-      setFormState(passport);
-    } else {
-      setFormState({
-        last_name: guest.guestLastName || '',
-        first_name: guest.guestFirstName || '',
-        middle_name: guest.guestMiddleName || '',
-        citizenship: 'TJ',
-      });
+    if (typeof window === 'undefined') return;
+    const normalize = (parsed: Record<string, string>) => {
+      const legacySeries = (parsed.passportSeries || '').toString().trim().toUpperCase();
+      const legacyNumber = (parsed.passportNumber || '').toString().trim();
+      if (legacySeries && !/^[A-Z\u0400-\u04FF]{1,2}\s/.test(legacyNumber)) {
+        const digits = legacyNumber.replace(/\D/g, '');
+        parsed.passportSeries = legacySeries.slice(0, 2);
+        parsed.passportNumber = digits;
+      }
+      return { ...EMPTY_PASSPORT, ...(parsed as Partial<PassportData>) };
+    };
+
+    // CLOUD IS THE ONLY SOURCE OF TRUTH.
+    const cloud = passportMap[storageKey] as Record<string, string> | undefined;
+    if (cloud) {
+      setPassport(buildAutoFill(normalize({ ...cloud })));
+      hydrated.current = storageKey;
+      return;
     }
-  }, [passport, guest.guestLastName, guest.guestFirstName, guest.guestMiddleName]);
+
+    // Legacy localStorage is used ONCE per booking, and only to seed a record
+    // that does not exist in the cloud yet (migration of old offline data).
+    if (hydrated.current !== storageKey) {
+      hydrated.current = storageKey;
+      try {
+        const raw = window.localStorage.getItem(storageKey);
+        if (raw) {
+          const parsed = normalize(JSON.parse(raw) as Record<string, string>);
+          setPassport(buildAutoFill(parsed));
+          setPassportRecord(storageKey, parsed);
+          window.localStorage.removeItem(storageKey); // never seed twice
+          return;
+        }
+      } catch { /* ignore */ }
+    }
+    setPassport(buildAutoFill(EMPTY_PASSPORT));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey, guest.guestLastName, guest.guestFirstName, guest.guestMiddleName, passportMap[storageKey]]);
+
+  const updatePassport = (key: PassportKey, value: string) => {
+    setPassport((prev) => {
+      const next = { ...prev, [key]: value };
+      setPassportRecord(storageKey, next);   // cloud only — no localStorage write
+      return next;
+    });
+    dirtyRef.current = true;
+  };
 
   const handleFieldChange = (field: keyof Passport, value: any) => {
     dirtyRef.current = true;
-    setFormState((prev) => ({ ...prev, [field]: value }));
+    setPassport((prev) => ({ ...prev, [field]: value }));
   };
 
   const handleSaveField = (field: keyof Passport, value: any) => {
     save.mutate({
       ...passport,
-      ...formState,
+      ...passportData,
       [field]: value || null,
     });
   };
@@ -316,7 +353,7 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
                       Паспортные данные · Passport
                     </div>
                     <span className="inline-flex items-center gap-1 rounded-full border-2 border-primary/40 bg-primary/10 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-primary">
-                      <Check className="h-3 w-3" /> {passportProgress(formState)}
+                      <Check className="h-3 w-3" /> {passportProgress(passportData)}
                     </span>
                   </div>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -338,7 +375,7 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
                           {'type' in f && f.type === 'date' ? (
                             <HotelDatePicker
                               label={f.label}
-                              value={(formState[key] as string) ?? ''}
+                              value={(passportData[key] as string) ?? ''}
                               onChange={(value) => {
                                 handleFieldChange(key, value);
                                 handleSaveField(key, value);
@@ -348,7 +385,7 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
                             />
                           ) : f.key === 'citizenship' ? (
                             <CountrySelect
-                              value={(formState[key] as string) ?? 'TJ'}
+                              value={(passportData[key] as string) ?? 'TJ'}
                               onChange={(value) => {
                                 handleFieldChange(key, value);
                                 handleSaveField(key, value);
@@ -358,7 +395,7 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
                             />
                           ) : f.key === 'gender' ? (
                             <GenderSelect
-                              value={(formState[key] as Gender) ?? null}
+                              value={(passportData[key] as Gender) ?? null}
                               onChange={(value) => {
                                 handleFieldChange(key, value);
                                 handleSaveField(key, value);
@@ -367,7 +404,7 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
                             />
                           ) : (
                             <input
-                              value={(formState[key] as string) ?? ''}
+                              value={(passportData[key] as string) ?? ''}
                               onChange={(e) => handleFieldChange(key, e.target.value)}
                               onBlur={(e) => handleSaveField(key, e.target.value)}
                               placeholder={f.placeholder}
