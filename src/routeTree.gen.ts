@@ -14,7 +14,9 @@ import { Route as AdminRouteImport } from './routes/admin'
 import { Route as DirectorRouteImport } from './routes/director'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ManagerRouteImport } from './routes/manager'
+import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as SuperuserRouteImport } from './routes/superuser'
+import { Route as TermsRouteImport } from './routes/terms'
 import { Route as SuperuserIndexRouteImport } from './routes/superuser.index'
 import { Route as SuperuserAdminsRouteImport } from './routes/superuser.admins'
 import { Route as SuperuserBookingsHistoryRouteImport } from './routes/superuser.bookings-history'
@@ -48,9 +50,19 @@ const ManagerRoute = ManagerRouteImport.update({
   path: '/manager',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SuperuserRoute = SuperuserRouteImport.update({
   id: '/superuser',
   path: '/superuser',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TermsRoute = TermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SuperuserIndexRoute = SuperuserIndexRouteImport.update({
@@ -96,7 +108,9 @@ export interface FileRoutesByFullPath {
   '/director': typeof DirectorRoute
   '/login': typeof LoginRoute
   '/manager': typeof ManagerRoute
+  '/privacy': typeof PrivacyRoute
   '/superuser': typeof SuperuserRouteWithChildren
+  '/terms': typeof TermsRoute
   '/superuser/admins': typeof SuperuserAdminsRoute
   '/superuser/bookings-history': typeof SuperuserBookingsHistoryRoute
   '/superuser/guests': typeof SuperuserGuestsRoute
@@ -111,6 +125,8 @@ export interface FileRoutesByTo {
   '/director': typeof DirectorRoute
   '/login': typeof LoginRoute
   '/manager': typeof ManagerRoute
+  '/privacy': typeof PrivacyRoute
+  '/terms': typeof TermsRoute
   '/superuser/admins': typeof SuperuserAdminsRoute
   '/superuser/bookings-history': typeof SuperuserBookingsHistoryRoute
   '/superuser/guests': typeof SuperuserGuestsRoute
@@ -126,7 +142,9 @@ export interface FileRoutesById {
   '/director': typeof DirectorRoute
   '/login': typeof LoginRoute
   '/manager': typeof ManagerRoute
+  '/privacy': typeof PrivacyRoute
   '/superuser': typeof SuperuserRouteWithChildren
+  '/terms': typeof TermsRoute
   '/superuser/admins': typeof SuperuserAdminsRoute
   '/superuser/bookings-history': typeof SuperuserBookingsHistoryRoute
   '/superuser/guests': typeof SuperuserGuestsRoute
@@ -143,7 +161,9 @@ export interface FileRouteTypes {
     | '/director'
     | '/login'
     | '/manager'
+    | '/privacy'
     | '/superuser'
+    | '/terms'
     | '/superuser/admins'
     | '/superuser/bookings-history'
     | '/superuser/guests'
@@ -158,6 +178,8 @@ export interface FileRouteTypes {
     | '/director'
     | '/login'
     | '/manager'
+    | '/privacy'
+    | '/terms'
     | '/superuser/admins'
     | '/superuser/bookings-history'
     | '/superuser/guests'
@@ -172,7 +194,9 @@ export interface FileRouteTypes {
     | '/director'
     | '/login'
     | '/manager'
+    | '/privacy'
     | '/superuser'
+    | '/terms'
     | '/superuser/admins'
     | '/superuser/bookings-history'
     | '/superuser/guests'
@@ -188,7 +212,9 @@ export interface RootRouteChildren {
   DirectorRoute: typeof DirectorRoute
   LoginRoute: typeof LoginRoute
   ManagerRoute: typeof ManagerRoute
+  PrivacyRoute: typeof PrivacyRoute
   SuperuserRoute: typeof SuperuserRouteWithChildren
+  TermsRoute: typeof TermsRoute
   BookingsIdDeleteRoute: typeof BookingsIdDeleteRoute
 }
 
@@ -229,11 +255,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ManagerRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/superuser': {
       id: '/superuser'
       path: '/superuser'
       fullPath: '/superuser'
       preLoaderRoute: typeof SuperuserRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/superuser/': {
@@ -316,7 +356,9 @@ const rootRouteChildren: RootRouteChildren = {
   DirectorRoute: DirectorRoute,
   LoginRoute: LoginRoute,
   ManagerRoute: ManagerRoute,
+  PrivacyRoute: PrivacyRoute,
   SuperuserRoute: SuperuserRouteWithChildren,
+  TermsRoute: TermsRoute,
   BookingsIdDeleteRoute: BookingsIdDeleteRoute,
 }
 export const routeTree = rootRouteImport
