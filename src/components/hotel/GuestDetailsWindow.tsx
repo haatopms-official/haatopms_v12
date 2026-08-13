@@ -3,9 +3,9 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { HotelDatePicker } from './HotelDatePicker';
 import { CountrySelect } from './CountrySelect';
-import { usePassport } from '@/hooks/usePassport';
+import { useSharedNamespace } from '@/hooks/useSharedNamespace';
 import { useCountries } from '@/hooks/useCountries';
-import { Passport, PASSPORT_FIELDS, passportProgress, Gender } from '@/types/passport';
+import { passportProgress, Gender } from '@/types/passport';
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 import {
   Activity,
@@ -65,6 +65,60 @@ interface GuestDetailsWindowProps {
 }
 
 type ContactIcon = typeof Phone;
+
+// Local shape used by this panel's form fields (snake_case, matches the
+// public-facing "Паспортные данные" labels below 1:1).
+type PassportData = {
+  last_name: string;
+  first_name: string;
+  middle_name: string;
+  birth_date: string;
+  issue_date: string;
+  citizenship: string;
+  gender: Gender | null;
+};
+
+const EMPTY_PASSPORT: PassportData = {
+  last_name: '',
+  first_name: '',
+  middle_name: '',
+  birth_date: '',
+  issue_date: '',
+  citizenship: '',
+  gender: null,
+};
+
+// The shared cloud record (public.hotel_app_state, state_key='passports',
+// keyed by booking id) uses camelCase field names — this is the SAME record
+// BookingDialog and the Anketa modal read/write, and the same names the
+// `sync_passports_from_state` DB trigger expects. Every panel must speak
+// this exact shape or edits made in one place silently vanish for the
+// others, which is what was happening here before this fix.
+function fromCloud(cloud: Record<string, unknown> | undefined): PassportData {
+  if (!cloud) return EMPTY_PASSPORT;
+  return {
+    last_name: String(cloud.lastName ?? ''),
+    first_name: String(cloud.firstName ?? ''),
+    middle_name: String(cloud.middleName ?? ''),
+    birth_date: String(cloud.birthDate ?? ''),
+    issue_date: String(cloud.issueDate ?? ''),
+    citizenship: String(cloud.citizenship ?? ''),
+    gender: (cloud.gender as Gender) ?? null,
+  };
+}
+
+function toCloud(existing: Record<string, unknown> | undefined, data: PassportData): Record<string, unknown> {
+  return {
+    ...existing,
+    lastName: data.last_name,
+    firstName: data.first_name,
+    middleName: data.middle_name,
+    birthDate: data.birth_date,
+    issueDate: data.issue_date,
+    citizenship: data.citizenship,
+    gender: data.gender,
+  };
+}
 
 const PASSPORT_FORM_CONFIG = [
   { key: 'last_name', label: 'Фамилия', placeholder: 'Иванов', icon: IdCard, span: 1 },
@@ -129,74 +183,79 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
   const [confirmClose, setConfirmClose] = useState(false);
   const dirtyRef = useRef(false);
 
-  // Hook integrations
-  const { passport, save } = usePassport(guest.guestUid);
   const { data: countries = [] } = useCountries();
 
-  // Local state buffers for smooth text input editing
+  // Same cloud-backed store BookingDialog and the Anketa modal use — a
+  // single row in public.hotel_app_state (state_key='passports'), keyed by
+  // booking id. This IS the single source of truth: every browser/role
+  // reads and writes this exact record, so edits appear everywhere
+  // (realtime push, ≤3s poll fallback) instead of being stuck in one tab.
+  const { map: passportMap, setRecord: setPassportRecord } = useSharedNamespace(
+    'passports',
+    'sayohat-passport-changed',
+  );
+  const storageKey = guest.bookingId || guest.guestUid || '';
+  const legacyLocalStorageKey = storageKey ? `guest-passport:booking:${storageKey}` : '';
+
+  // Local state buffer for smooth text input editing
   const [passportData, setPassport] = useState<PassportData>(EMPTY_PASSPORT);
-  const hydrated = useRef<string | null>(null);
+  const hydratedKey = useRef<string | null>(null);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const normalize = (parsed: Record<string, string>) => {
-      const legacySeries = (parsed.passportSeries || '').toString().trim().toUpperCase();
-      const legacyNumber = (parsed.passportNumber || '').toString().trim();
-      if (legacySeries && !/^[A-Z\u0400-\u04FF]{1,2}\s/.test(legacyNumber)) {
-        const digits = legacyNumber.replace(/\D/g, '');
-        parsed.passportSeries = legacySeries.slice(0, 2);
-        parsed.passportNumber = digits;
-      }
-      return { ...EMPTY_PASSPORT, ...(parsed as Partial<PassportData>) };
-    };
-
-    // CLOUD IS THE ONLY SOURCE OF TRUTH.
-    const cloud = passportMap[storageKey] as Record<string, string> | undefined;
-    if (cloud) {
-      setPassport(buildAutoFill(normalize({ ...cloud })));
-      hydrated.current = storageKey;
+    if (typeof window === 'undefined' || !storageKey) {
+      setPassport(EMPTY_PASSPORT);
       return;
     }
 
-    // Legacy localStorage is used ONCE per booking, and only to seed a record
-    // that does not exist in the cloud yet (migration of old offline data).
-    if (hydrated.current !== storageKey) {
-      hydrated.current = storageKey;
+    // CLOUD IS THE ONLY SOURCE OF TRUTH. Re-hydrate any time the shared
+    // record for this booking changes — including when another user just
+    // saved a field, which is what makes this panel sync live.
+    const cloud = passportMap[storageKey] as Record<string, unknown> | undefined;
+    if (cloud) {
+      setPassport(fromCloud(cloud));
+      hydratedKey.current = storageKey;
+      return;
+    }
+
+    // Legacy localStorage is used ONCE per booking, and only to seed a
+    // record that does not exist in the cloud yet (migration of old
+    // offline data). After that it is deleted so it can never resurrect a
+    // stale value over a newer cloud record again.
+    if (hydratedKey.current !== storageKey) {
+      hydratedKey.current = storageKey;
       try {
-        const raw = window.localStorage.getItem(storageKey);
+        const raw = window.localStorage.getItem(legacyLocalStorageKey);
         if (raw) {
-          const parsed = normalize(JSON.parse(raw) as Record<string, string>);
-          setPassport(buildAutoFill(parsed));
-          setPassportRecord(storageKey, parsed);
-          window.localStorage.removeItem(storageKey); // never seed twice
+          const legacy = JSON.parse(raw) as Record<string, unknown>;
+          const parsed = fromCloud(legacy);
+          setPassport(parsed);
+          setPassportRecord(storageKey, toCloud(undefined, parsed));
+          window.localStorage.removeItem(legacyLocalStorageKey); // never seed twice
           return;
         }
       } catch { /* ignore */ }
     }
-    setPassport(buildAutoFill(EMPTY_PASSPORT));
+    setPassport(EMPTY_PASSPORT);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storageKey, guest.guestLastName, guest.guestFirstName, guest.guestMiddleName, passportMap[storageKey]]);
+  }, [storageKey, passportMap[storageKey]]);
 
-  const updatePassport = (key: PassportKey, value: string) => {
-    setPassport((prev) => {
-      const next = { ...prev, [key]: value };
-      setPassportRecord(storageKey, next);   // cloud only — no localStorage write
-      return next;
-    });
-    dirtyRef.current = true;
-  };
-
-  const handleFieldChange = (field: keyof Passport, value: any) => {
+  const handleFieldChange = (field: keyof PassportData, value: any) => {
     dirtyRef.current = true;
     setPassport((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleSaveField = (field: keyof Passport, value: any) => {
-    save.mutate({
-      ...passport,
-      ...passportData,
-      [field]: value || null,
+  // Writes go straight to the shared cloud record — the same one
+  // BookingDialog and the Anketa modal read — so every other open tab
+  // picks this up on the next realtime event or poll tick.
+  const handleSaveField = (field: keyof PassportData, value: any) => {
+    if (!storageKey) return;
+    setPassport((prev) => {
+      const next = { ...prev, [field]: value };
+      const existing = passportMap[storageKey] as Record<string, unknown> | undefined;
+      setPassportRecord(storageKey, toCloud(existing, next));
+      return next;
     });
+    dirtyRef.current = true;
   };
 
   const nights = Number.isInteger(guest.nightsDisplay) ? guest.nightsDisplay : guest.nightsDisplay.toFixed(1);
@@ -359,7 +418,7 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     {PASSPORT_FORM_CONFIG.map((f, idx) => {
                       const Icon = f.icon;
-                      const key = f.key as keyof Passport;
+                      const key = f.key as keyof PassportData;
                       return (
                         <motion.div
                           key={f.key}
