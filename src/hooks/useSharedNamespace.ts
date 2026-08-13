@@ -7,6 +7,51 @@ export type RecordMap = Record<string, Record<string, unknown>>;
 
 const memCache: Record<string, RecordMap> = {};
 
+// ─────────── Shared realtime channel registry ───────────
+// Several components can call useSharedNamespace with the SAME key at the
+// same time (e.g. 'passports' is used by BookingDialog, GuestDetailsWindow,
+// and the Anketa modal simultaneously). supabase-js's RealtimeClient
+// reuses the SAME channel object for a repeated topic string — so if every
+// hook instance independently called `supabase.channel(topic).on(...).subscribe()`,
+// the 2nd/3rd call would try to attach a listener to a channel that has
+// already subscribed, which supabase-js throws on. To avoid that, only the
+// FIRST hook instance for a given key actually opens the channel; every
+// later instance just registers a listener on it, and the channel is torn
+// down only once the last instance unmounts.
+type ChannelEntry = {
+  channel: ReturnType<typeof supabase.channel>;
+  refCount: number;
+  listeners: Set<() => void>;
+};
+const channelRegistry: Record<string, ChannelEntry> = {};
+
+function subscribeToKey(key: string, onChange: () => void): () => void {
+  let entry = channelRegistry[key];
+  if (!entry) {
+    const created: ChannelEntry = { channel: null as any, refCount: 0, listeners: new Set() };
+    channelRegistry[key] = created;
+    created.channel = supabase
+      .channel(`hotel_app_state:${key}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'hotel_app_state', filter: `state_key=eq.${key}` },
+        () => { created.listeners.forEach((fn) => fn()); },
+      )
+      .subscribe();
+    entry = created;
+  }
+  entry.refCount += 1;
+  entry.listeners.add(onChange);
+  return () => {
+    entry.listeners.delete(onChange);
+    entry.refCount -= 1;
+    if (entry.refCount <= 0) {
+      void supabase.removeChannel(entry.channel);
+      delete channelRegistry[key];
+    }
+  };
+}
+
 export function useSharedNamespace(key: HotelStateKey, eventName: string) {
   const getShared = useServerFn(getHotelState);
   const setShared = useServerFn(setHotelState);
@@ -66,14 +111,7 @@ export function useSharedNamespace(key: HotelStateKey, eventName: string) {
 
     void pull();
 
-    const channel = supabase
-      .channel(`hotel_app_state:${key}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'hotel_app_state', filter: `state_key=eq.${key}` },
-        () => { void pull(); },
-      )
-      .subscribe();
+    const unsubscribe = subscribeToKey(key, () => { void pull(); });
 
     const onFocus = () => { void pull(); };
     window.addEventListener('focus', onFocus);
@@ -85,7 +123,7 @@ export function useSharedNamespace(key: HotelStateKey, eventName: string) {
       window.clearInterval(id);
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onFocus);
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [getShared, key, applyRemote]);
 

@@ -9,6 +9,41 @@ interface Row<T> { state_data: T; version: number; updated_at: string }
 
 const FLUSH_MS = 150;
 
+// Same channel-dedup guard as useSharedNamespace.ts: supabase-js reuses the
+// same channel object for a repeated topic string, so if this hook is ever
+// mounted twice for the same key at once (double-mount, fast refresh, a
+// second consumer added later) the 2nd `.on()` would throw on an
+// already-subscribed channel. Route every instance through one registry.
+type ChannelEntry = { channel: ReturnType<typeof supabase.channel>; refCount: number; listeners: Set<(payload: any) => void> };
+const channelRegistry: Record<string, ChannelEntry> = {};
+
+function subscribeToKey(key: string, onChange: (payload: any) => void): () => void {
+  let entry = channelRegistry[key];
+  if (!entry) {
+    const created: ChannelEntry = { channel: null as any, refCount: 0, listeners: new Set() };
+    channelRegistry[key] = created;
+    created.channel = supabase
+      .channel(`hotel_app_state:${key}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'hotel_app_state', filter: `state_key=eq.${key}` },
+        (payload: any) => { created.listeners.forEach((fn) => fn(payload)); },
+      )
+      .subscribe();
+    entry = created;
+  }
+  entry.refCount += 1;
+  entry.listeners.add(onChange);
+  return () => {
+    entry.listeners.delete(onChange);
+    entry.refCount -= 1;
+    if (entry.refCount <= 0) {
+      void supabase.removeChannel(entry.channel);
+      delete channelRegistry[key];
+    }
+  };
+}
+
 /**
  * Shared, real-time, cross-user state backed by `public.hotel_app_state`.
  * - Initial value comes from the DB (or `initial` if row is empty).
@@ -64,38 +99,31 @@ export function useSharedState<T>(key: HotelStateKey, initial: T) {
 
   // Realtime subscription
   useEffect(() => {
-    const channel = supabase
-      .channel(`hotel_app_state:${key}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'hotel_app_state', filter: `state_key=eq.${key}` },
-        (payload: any) => {
-          const row = (payload.new ?? payload.old) as Row<T> | null;
-          if (!row) return;
-          const v = Number(row.version) || 0;
-          if (v <= versionRef.current) return;
-          if (localEchoRef.current && v === localEchoRef.current) {
-            localEchoRef.current = 0;
-            versionRef.current = v;
-            committedRef.current = row.state_data as T;
-            return;
-          }
-          versionRef.current = v;
-          committedRef.current = row.state_data as T;
-          // If we have local edits not yet confirmed by the server, keep them —
-          // reapply them on top of the fresh server state instead of discarding
-          // them (this is what previously made deletes/creates "flip back").
-          if (pendingUpdatersRef.current.length > 0) {
-            let next = row.state_data as T;
-            for (const fn of pendingUpdatersRef.current) next = fn(next);
-            setDataState(next);
-          } else {
-            setDataState(row.state_data as T);
-          }
-        },
-      )
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    const unsubscribe = subscribeToKey(key, (payload: any) => {
+      const row = (payload.new ?? payload.old) as Row<T> | null;
+      if (!row) return;
+      const v = Number(row.version) || 0;
+      if (v <= versionRef.current) return;
+      if (localEchoRef.current && v === localEchoRef.current) {
+        localEchoRef.current = 0;
+        versionRef.current = v;
+        committedRef.current = row.state_data as T;
+        return;
+      }
+      versionRef.current = v;
+      committedRef.current = row.state_data as T;
+      // If we have local edits not yet confirmed by the server, keep them —
+      // reapply them on top of the fresh server state instead of discarding
+      // them (this is what previously made deletes/creates "flip back").
+      if (pendingUpdatersRef.current.length > 0) {
+        let next = row.state_data as T;
+        for (const fn of pendingUpdatersRef.current) next = fn(next);
+        setDataState(next);
+      } else {
+        setDataState(row.state_data as T);
+      }
+    });
+    return unsubscribe;
   }, [key]);
 
   const flush = useCallback(async () => {
