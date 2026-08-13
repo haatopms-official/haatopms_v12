@@ -188,7 +188,7 @@ export default function HotelDetailsPage({ embedded = false }: Props) {
         </div>
 
         <div className="mt-6 flex items-center justify-between border-t border-slate-200/60 pt-4 text-xs text-muted-foreground dark:border-white/10">
-          <span>Данные сохраняются локально на этом устройстве.</span>
+          <span>Данные сохраняются в базеи видны всем пользователям.</span>
           <button
             type="button"
             onClick={() => setConfirmClear(true)}
