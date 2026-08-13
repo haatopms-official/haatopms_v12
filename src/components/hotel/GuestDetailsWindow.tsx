@@ -64,10 +64,6 @@ interface GuestDetailsWindowProps {
   };
 }
 
-type ContactIcon = typeof Phone;
-
-// Local shape used by this panel's form fields (snake_case, matches the
-// public-facing "Паспортные данные" labels below 1:1).
 type PassportData = {
   last_name: string;
   first_name: string;
@@ -88,12 +84,6 @@ const EMPTY_PASSPORT: PassportData = {
   gender: null,
 };
 
-// The shared cloud record (public.hotel_app_state, state_key='passports',
-// keyed by booking id) uses camelCase field names — this is the SAME record
-// BookingDialog and the Anketa modal read/write, and the same names the
-// `sync_passports_from_state` DB trigger expects. Every panel must speak
-// this exact shape or edits made in one place silently vanish for the
-// others, which is what was happening here before this fix.
 function fromCloud(cloud: Record<string, unknown> | undefined): PassportData {
   if (!cloud) return EMPTY_PASSPORT;
   return {
@@ -179,17 +169,63 @@ function GenderSelect({ value, onChange, placeholder }: { value: Gender | null; 
   );
 }
 
+function Badge({ icon: Icon, children }: { icon: any; children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-black text-primary">
+      <Icon className="h-3.5 w-3.5" />
+      {children}
+    </span>
+  );
+}
+
+function Panel({ title, icon: Icon, children }: { title: string; icon: any; children: React.ReactNode }) {
+  return (
+    <div className="rounded-[24px] border border-border/70 bg-card/60 p-4 shadow-sm backdrop-blur-md">
+      <div className="mb-3 flex items-center gap-2 text-xs font-black uppercase tracking-wider text-muted-foreground">
+        <Icon className="h-4 w-4 text-primary" />
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function InfoLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between text-xs font-semibold">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-bold text-foreground">{value}</span>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-border/50 bg-background/50 p-2.5 text-center">
+      <div className="text-[10px] font-black uppercase text-muted-foreground">{label}</div>
+      <div className="text-sm font-black text-foreground">{value}</div>
+    </div>
+  );
+}
+
+function Metric({ icon: Icon, label, value, sub }: { icon: any; label: string; value: string; sub?: string }) {
+  return (
+    <div className="rounded-2xl border border-border/60 bg-card/80 p-3 shadow-sm">
+      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-black uppercase text-muted-foreground">
+        <Icon className="h-3.5 w-3.5 text-primary" /> {label}
+      </div>
+      <div className="text-sm font-black text-foreground">{value}</div>
+      {sub && <div className="text-[10px] font-semibold text-muted-foreground">{sub}</div>}
+    </div>
+  );
+}
+
 export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowProps) {
   const [confirmClose, setConfirmClose] = useState(false);
   const dirtyRef = useRef(false);
 
-  const { data: countries = [] } = useCountries();
+  useCountries();
 
-  // Same cloud-backed store BookingDialog and the Anketa modal use — a
-  // single row in public.hotel_app_state (state_key='passports'), keyed by
-  // booking id. This IS the single source of truth: every browser/role
-  // reads and writes this exact record, so edits appear everywhere
-  // (realtime push, ≤3s poll fallback) instead of being stuck in one tab.
   const { map: passportMap, setRecord: setPassportRecord } = useSharedNamespace(
     'passports',
     'sayohat-passport-changed',
@@ -197,9 +233,14 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
   const storageKey = guest.bookingId || guest.guestUid || '';
   const legacyLocalStorageKey = storageKey ? `guest-passport:booking:${storageKey}` : '';
 
-  // Local state buffer for smooth text input editing
   const [passportData, setPassport] = useState<PassportData>(EMPTY_PASSPORT);
+  const passportRef = useRef<PassportData>(EMPTY_PASSPORT);
   const hydratedKey = useRef<string | null>(null);
+
+  // Synchronize ref on every state change so commit function never hits stale state
+  useEffect(() => {
+    passportRef.current = passportData;
+  }, [passportData]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !storageKey) {
@@ -207,9 +248,6 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
       return;
     }
 
-    // CLOUD IS THE ONLY SOURCE OF TRUTH. Re-hydrate any time the shared
-    // record for this booking changes — including when another user just
-    // saved a field, which is what makes this panel sync live.
     const cloud = passportMap[storageKey] as Record<string, unknown> | undefined;
     if (cloud) {
       setPassport(fromCloud(cloud));
@@ -217,10 +255,6 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
       return;
     }
 
-    // Legacy localStorage is used ONCE per booking, and only to seed a
-    // record that does not exist in the cloud yet (migration of old
-    // offline data). After that it is deleted so it can never resurrect a
-    // stale value over a newer cloud record again.
     if (hydratedKey.current !== storageKey) {
       hydratedKey.current = storageKey;
       try {
@@ -230,13 +264,12 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
           const parsed = fromCloud(legacy);
           setPassport(parsed);
           setPassportRecord(storageKey, toCloud(undefined, parsed));
-          window.localStorage.removeItem(legacyLocalStorageKey); // never seed twice
+          window.localStorage.removeItem(legacyLocalStorageKey);
           return;
         }
       } catch { /* ignore */ }
     }
     setPassport(EMPTY_PASSPORT);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey, passportMap[storageKey]]);
 
   const handleFieldChange = (field: keyof PassportData, value: any) => {
@@ -244,18 +277,10 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
     setPassport((prev) => ({ ...prev, [field]: value }));
   };
 
-  // Writes go straight to the shared cloud record — the same one
-  // BookingDialog and the Anketa modal read — so every other open tab
-  // picks this up on the next realtime event or poll tick.
-  const handleSaveField = (field: keyof PassportData, value: any) => {
-    if (!storageKey) return;
-    setPassport((prev) => {
-      const next = { ...prev, [field]: value };
-      const existing = passportMap[storageKey] as Record<string, unknown> | undefined;
-      setPassportRecord(storageKey, toCloud(existing, next));
-      return next;
-    });
-    dirtyRef.current = true;
+  const commitPassportToCloud = () => {
+    if (!storageKey || !dirtyRef.current) return;
+    const existing = passportMap[storageKey] as Record<string, unknown> | undefined;
+    setPassportRecord(storageKey, toCloud(existing, passportRef.current));
   };
 
   const nights = Number.isInteger(guest.nightsDisplay) ? guest.nightsDisplay : guest.nightsDisplay.toFixed(1);
@@ -271,7 +296,19 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
     if (!dirtyRef.current) { onClose(); return; }
     setConfirmClose(true);
   };
-  const finishClose = () => { setConfirmClose(false); dirtyRef.current = false; onClose(); };
+
+  const finishSave = () => {
+    commitPassportToCloud();
+    setConfirmClose(false);
+    dirtyRef.current = false;
+    onClose();
+  };
+
+  const finishDiscard = () => {
+    setConfirmClose(false);
+    dirtyRef.current = false;
+    onClose();
+  };
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && requestClose()}>
@@ -437,7 +474,6 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
                               value={(passportData[key] as string) ?? ''}
                               onChange={(value) => {
                                 handleFieldChange(key, value);
-                                handleSaveField(key, value);
                               }}
                               compact
                               showLabel={false}
@@ -447,7 +483,6 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
                               value={(passportData[key] as string) ?? 'TJ'}
                               onChange={(value) => {
                                 handleFieldChange(key, value);
-                                handleSaveField(key, value);
                               }}
                               placeholder={f.placeholder}
                               compact
@@ -457,7 +492,6 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
                               value={(passportData[key] as Gender) ?? null}
                               onChange={(value) => {
                                 handleFieldChange(key, value);
-                                handleSaveField(key, value);
                               }}
                               placeholder={f.placeholder}
                             />
@@ -465,7 +499,6 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
                             <input
                               value={(passportData[key] as string) ?? ''}
                               onChange={(e) => handleFieldChange(key, e.target.value)}
-                              onBlur={(e) => handleSaveField(key, e.target.value)}
                               placeholder={f.placeholder}
                               maxLength={28}
                               className="anketa-line-input input-focus-glow"
@@ -496,19 +529,29 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
                   className="relative w-full max-w-md overflow-hidden rounded-[28px] border border-primary/30 bg-card p-5 shadow-[0_28px_90px_hsl(var(--primary-hsl)/0.28)]"
                 >
                   <div className="guest-holo-grid absolute inset-0 opacity-70" aria-hidden />
-                  <div className="relative">
-                    <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/30">
-                      <ShieldCheck className="h-5 w-5" />
+                  <div className="relative space-y-4">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                        <Sparkles className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <h3 className="text-base font-black text-foreground">Save guest view?</h3>
+                        <p className="text-xs font-semibold text-muted-foreground">Unsaved updates detected for this guest profile.</p>
+                      </div>
                     </div>
-                    <h3 className="font-display text-xl font-black text-foreground">Save this guest view?</h3>
-                    <p className="mt-2 text-sm font-semibold leading-relaxed text-muted-foreground">
-                      You are leaving Guest Details. Keep the current guest information view, or discard and close the intelligence panel.
-                    </p>
-                    <div className="mt-5 grid grid-cols-2 gap-2">
-                      <button type="button" onClick={finishClose} className="rounded-2xl border border-border bg-background px-4 py-3 text-sm font-black text-muted-foreground hover:border-destructive/40 hover:text-destructive">
+                    <div className="flex items-center justify-end gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={finishDiscard}
+                        className="rounded-2xl border border-border bg-background px-4 py-3 text-sm font-black text-muted-foreground hover:border-destructive/40 hover:text-destructive"
+                      >
                         Discard
                       </button>
-                      <button type="button" onClick={finishClose} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-3 text-sm font-black text-primary-foreground shadow-lg shadow-primary/30 hover:shadow-xl hover:shadow-primary/40">
+                      <button
+                        type="button"
+                        onClick={finishSave}
+                        className="inline-flex items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-3 text-sm font-black text-primary-foreground shadow-lg shadow-primary/30 hover:shadow-xl hover:shadow-primary/40"
+                      >
                         <Check className="h-4 w-4" /> Save view
                       </button>
                     </div>
@@ -520,54 +563,5 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
         </motion.div>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function Badge({ icon: Icon, children }: { icon: ContactIcon; children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-background/75 px-3 py-1 text-xs font-black text-foreground ring-1 ring-border/70">
-      <Icon className="h-3.5 w-3.5 text-primary" />
-      {children}
-    </span>
-  );
-}
-
-function Panel({ title, icon: Icon, children }: { title: string; icon: ContactIcon; children: React.ReactNode }) {
-  return (
-    <div className="rounded-[24px] border border-border/70 bg-card/80 p-4 shadow-sm">
-      <div className="mb-4 flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.16em] text-foreground/70">
-        <Icon className="h-4 w-4 text-primary" /> {title}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function InfoLine({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/50 bg-background/65 px-3 py-2.5 text-sm">
-      <span className="font-bold text-muted-foreground">{label}</span>
-      <span className="text-right font-black text-foreground">{value}</span>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-primary/15 bg-primary/5 p-3">
-      <div className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">{label}</div>
-      <div className="mt-1 font-display text-lg font-black text-primary">{value}</div>
-    </div>
-  );
-}
-
-function Metric({ icon: Icon, label, value, sub }: { icon: ContactIcon; label: string; value: string; sub: string }) {
-  return (
-    <div className="rounded-[22px] border border-primary/20 bg-gradient-to-b from-primary/10 to-background/70 p-4 shadow-lg shadow-primary/10">
-      <Icon className="mb-3 h-5 w-5 text-primary" />
-      <div className="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">{label}</div>
-      <div className="mt-1 truncate font-display text-base font-black text-foreground">{value}</div>
-      <div className="mt-1 text-xs font-semibold text-muted-foreground">{sub}</div>
-    </div>
   );
 }
