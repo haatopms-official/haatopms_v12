@@ -61,15 +61,36 @@ export function useBookings() {
     if (bErr) throw bErr;
   }, []);
 
-  // 1) initial load — join the main table so contacts come along
+  // 1) initial load — join the main table so contacts come along.
+  // fetchSeqRef guards against out-of-order responses: if two reloads are
+  // in flight (e.g. one from the guests write, one from the bookings write
+  // of the same save) and the older one resolves LAST, we must not let it
+  // overwrite the newer data — that race was the actual cause of bookings
+  // randomly "disappearing" for a frame before reappearing.
+  const fetchSeqRef = useRef(0);
   const reload = useCallback(async () => {
+    const seq = ++fetchSeqRef.current;
     const { data, error } = await supabase
       .from('bookings')
       .select('*, guests:main_id ( main_id, fio, tel, whats, email, telega, inst, guest_kind )')
       .order('no', { ascending: true });
     if (error) { console.error('[bookings] load', error); return; }
+    if (seq !== fetchSeqRef.current) return; // a newer reload already started/finished — drop this stale result
     applyLocal((data ?? []).map((r) => rowToBooking(r as Record<string, unknown>)));
   }, [applyLocal]);
+
+  // Debounced trigger: collapses bursts of realtime events (one save often
+  // fires both a `guests` and a `bookings` change) into a single reload
+  // instead of one full-table refetch per event, which is what was causing
+  // the visible flicker/lag whenever anyone saved a booking.
+  const reloadTimerRef = useRef<number | null>(null);
+  const scheduleReload = useCallback(() => {
+    if (reloadTimerRef.current !== null) window.clearTimeout(reloadTimerRef.current);
+    reloadTimerRef.current = window.setTimeout(() => {
+      reloadTimerRef.current = null;
+      void reload();
+    }, 300);
+  }, [reload]);
 
   useEffect(() => { void reload(); }, [reload]);
 
@@ -77,12 +98,15 @@ export function useBookings() {
   useEffect(() => {
     const ch = supabase
       .channel('sheet-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, reload)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'guests' }, reload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, scheduleReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'guests' }, scheduleReload)
       .subscribe();
 
-    return () => { void supabase.removeChannel(ch); };
-  }, [reload]);
+    return () => {
+      if (reloadTimerRef.current !== null) window.clearTimeout(reloadTimerRef.current);
+      void supabase.removeChannel(ch);
+    };
+  }, [scheduleReload]);
 
   // 3) refetch when the tab regains focus (covers dropped sockets)
   useEffect(() => {

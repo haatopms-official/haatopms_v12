@@ -382,6 +382,84 @@ export function BookingDialog({
   );
   latestSnapshotRef.current = currentSnapshot;
 
+  // ---------------- LOCAL DRAFT (crash/refresh safety net) ----------------
+  // Requirement: nothing is written to the database while the user is
+  // typing — only on Save. But if the tab is closed/crashes/refreshes
+  // mid-edit, the in-progress text should not be lost. So while the dialog
+  // is open we mirror the draft into localStorage (never to Supabase), and
+  // on open we restore from it if present. The draft is deleted the moment
+  // a real save succeeds, or when the user explicitly discards changes.
+  const draftKey = useMemo(
+    () => `booking-draft:${editBooking?.id ?? `new:${roomNumber}:${bedIndex ?? 'x'}`}`,
+    [editBooking?.id, roomNumber, bedIndex],
+  );
+  const draftRestoredRef = useRef(false);
+
+  // Restore a pending draft once, right after the dialog opens and the
+  // normal booking fields have hydrated (same timing as the baseline effect
+  // below), so the draft always wins over the freshly-loaded booking data.
+  useEffect(() => {
+    if (!open) { draftRestoredRef.current = false; return; }
+    if (draftRestoredRef.current) return;
+    draftRestoredRef.current = true;
+    try {
+      const raw = window.localStorage.getItem(draftKey);
+      if (!raw) return;
+      const draft = JSON.parse(raw) as Partial<{
+        residency: 'resident' | 'nonResident'; firstName: string; lastName: string; middleName: string;
+        guestPhone: string; guestEmail: string; guestWhatsapp: string; guestTelegram: string; guestInstagram: string;
+        guestCount: number; notes: string; inDate: string; outDate: string; status: BookingStatus;
+        earlyCheckin: boolean; lateCheckout: boolean; price: string;
+        paymentType: string; paymentTiming: string; paymentAmount: string; paymentInput: string;
+      }>;
+      if (draft.residency !== undefined) setResidency(draft.residency);
+      if (draft.firstName !== undefined) setFirstName(draft.firstName);
+      if (draft.lastName !== undefined) setLastName(draft.lastName);
+      if (draft.middleName !== undefined) setMiddleName(draft.middleName);
+      if (draft.guestPhone !== undefined) setGuestPhone(draft.guestPhone);
+      if (draft.guestEmail !== undefined) setGuestEmail(draft.guestEmail);
+      if (draft.guestWhatsapp !== undefined) setGuestWhatsapp(draft.guestWhatsapp);
+      if (draft.guestTelegram !== undefined) setGuestTelegram(draft.guestTelegram);
+      if (draft.guestInstagram !== undefined) setGuestInstagram(draft.guestInstagram);
+      if (draft.guestCount !== undefined) setGuestCount(draft.guestCount);
+      if (draft.notes !== undefined) setNotes(draft.notes);
+      if (draft.inDate !== undefined) setInDate(draft.inDate);
+      if (draft.outDate !== undefined) setOutDate(draft.outDate);
+      if (draft.status !== undefined) setStatus(draft.status);
+      if (draft.earlyCheckin !== undefined) setEarlyCheckin(draft.earlyCheckin);
+      if (draft.lateCheckout !== undefined) setLateCheckout(draft.lateCheckout);
+      if (draft.price !== undefined) setPrice(draft.price);
+      if (draft.paymentType !== undefined) setPaymentType(draft.paymentType as typeof paymentType);
+      if (draft.paymentTiming !== undefined) setPaymentTiming(draft.paymentTiming as typeof paymentTiming);
+      if (draft.paymentAmount !== undefined) setPaymentAmount(draft.paymentAmount);
+      if (draft.paymentInput !== undefined) setPaymentInput(draft.paymentInput);
+      toast.message(lang === 'ru' ? 'Восстановлен несохранённый черновик' : 'Restored an unsaved draft');
+    } catch {
+      // corrupt/old draft — ignore it silently
+      window.localStorage.removeItem(draftKey);
+    }
+  }, [open, draftKey, lang]);
+
+  // Mirror every field change into localStorage ONLY (never to the server)
+  // while the dialog is open. Debounced so rapid typing doesn't hammer
+  // localStorage on every keystroke.
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(draftKey, currentSnapshot);
+      } catch {
+        // localStorage full/unavailable — draft safety net is best-effort only
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [open, draftKey, currentSnapshot]);
+
+  const clearDraft = useCallback(() => {
+    try { window.localStorage.removeItem(draftKey); } catch { /* ignore */ }
+  }, [draftKey]);
+  // -------------- END LOCAL DRAFT --------------
+
   const rebaselineSnapshotSoon = useCallback(() => {
     window.setTimeout(() => {
       initialSnapshotRef.current = latestSnapshotRef.current;
@@ -491,6 +569,7 @@ export function BookingDialog({
     }
     toast.success(t('bookingSaved'));
     rebaselineSnapshotSoon();
+    clearDraft();
     onClose();
   };
 
@@ -1384,6 +1463,7 @@ export function BookingDialog({
         onDiscard={() => {
           setWarnOpen(false);
           initialSnapshotRef.current = latestSnapshotRef.current;
+          clearDraft();
           onClose();
         }}
         title={t('unsavedTitle')}
