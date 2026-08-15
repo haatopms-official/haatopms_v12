@@ -2,6 +2,27 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { formatPrice, formatInputNumber, parseInputNumber } from '@/lib/formatPrice';
 
+// One-time cleanup, module scope so it runs at most once per page load
+// (not once per dialog open): wipes any leftover drafts from the old,
+// unversioned "booking-draft:" key format written by earlier builds,
+// before the isDirty gate existed. Without this they'd sit in the
+// browser forever as harmless but permanent dead storage.
+let legacyDraftsCleaned = false;
+function cleanupLegacyDrafts() {
+  if (legacyDraftsCleaned) return;
+  legacyDraftsCleaned = true;
+  try {
+    const toRemove: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith('booking-draft:')) toRemove.push(k);
+    }
+    toRemove.forEach((k) => window.localStorage.removeItem(k));
+  } catch {
+    // best-effort only
+  }
+}
+
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import {
   AlertDialog,
@@ -400,10 +421,21 @@ export function BookingDialog({
   // on open we restore from it if present. The draft is deleted the moment
   // a real save succeeds, or when the user explicitly discards changes.
   const draftKey = useMemo(
-    () => `booking-draft:${editBooking?.id ?? `new:${roomNumber}:${bedIndex ?? 'x'}`}`,
+    // v2: versioned prefix. Older builds (before the isDirty gate existed)
+    // could have written a stale draft under the old "booking-draft:" key
+    // for this same booking — that old entry has no reliable way to be
+    // told apart from a real unsaved draft just by comparing content, so
+    // instead we simply stop reading that old key namespace entirely by
+    // moving to "booking-draft-v2:". Old leftover entries become orphaned
+    // and are never looked at again, which is what actually stops the
+    // "restored a draft" toast from firing on a booking nobody is
+    // currently mid-edit on.
+    () => `booking-draft-v2:${editBooking?.id ?? `new:${roomNumber}:${bedIndex ?? 'x'}`}`,
     [editBooking?.id, roomNumber, bedIndex],
   );
   const draftRestoredRef = useRef(false);
+
+  useEffect(() => { cleanupLegacyDrafts(); }, []);
 
   // Restore a pending draft once, right after the dialog opens and the
   // normal booking fields have hydrated (same timing as the baseline effect
