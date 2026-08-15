@@ -879,7 +879,7 @@ export function BookingDialog({
             >
               <div className="grid grid-cols-1 gap-2.5 md:grid-cols-3">
                 <Field label={t('lastName')}>
-                  <Input ref={lastNameRef} value={lastName} onChange={e => setLastName(e.target.value)} placeholder={t('lastNamePlaceholder')} className={`h-11 rounded-xl bg-background text-sm font-semibold transition-all duration-500 ${surnameGlow ? 'ring-2 ring-primary/70 shadow-[0_0_0_4px_hsl(var(--primary-hsl)/0.18),0_0_24px_hsl(var(--primary-hsl)/0.45)]' : ''}`} />
+                  <Input ref={lastNameRef} value={lastName} onChange={e => setLastName(e.target.value)} placeholder={t('lastNamePlaceholder')} className={`h-11 rounded-xl bg-background text-sm font-semibold transition-shadow duration-500 ${surnameGlow ? 'ring-2 ring-primary/70 shadow-[0_0_0_4px_hsl(var(--primary-hsl)/0.18),0_0_24px_hsl(var(--primary-hsl)/0.45)]' : ''}`} />
                 </Field>
                 <Field label={t('firstName')} required>
                   <Input value={firstName} onChange={e => setFirstName(e.target.value)} placeholder={t('firstNamePlaceholder')} className="h-11 rounded-xl bg-background text-sm font-semibold" />
