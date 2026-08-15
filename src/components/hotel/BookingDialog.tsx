@@ -398,6 +398,11 @@ export function BookingDialog({
   // Restore a pending draft once, right after the dialog opens and the
   // normal booking fields have hydrated (same timing as the baseline effect
   // below), so the draft always wins over the freshly-loaded booking data.
+  // IMPORTANT: only restore (and only toast) if the draft actually differs
+  // from what was just freshly loaded — otherwise a harmless leftover draft
+  // (e.g. written once by mistake, or from before this guard existed) would
+  // re-trigger the "restored a draft" toast every single time this booking
+  // is opened, even with nothing actually unsaved. That was the bug.
   useEffect(() => {
     if (!open) { draftRestoredRef.current = false; return; }
     if (draftRestoredRef.current) return;
@@ -405,6 +410,12 @@ export function BookingDialog({
     try {
       const raw = window.localStorage.getItem(draftKey);
       if (!raw) return;
+      if (raw === latestSnapshotRef.current) {
+        // draft is identical to the freshly-loaded booking — nothing was
+        // ever actually unsaved, just clean up the stale entry and stop.
+        window.localStorage.removeItem(draftKey);
+        return;
+      }
       const draft = JSON.parse(raw) as Partial<{
         residency: 'resident' | 'nonResident'; firstName: string; lastName: string; middleName: string;
         guestPhone: string; guestEmail: string; guestWhatsapp: string; guestTelegram: string; guestInstagram: string;
@@ -440,11 +451,13 @@ export function BookingDialog({
     }
   }, [open, draftKey, lang]);
 
-  // Mirror every field change into localStorage ONLY (never to the server)
-  // while the dialog is open. Debounced so rapid typing doesn't hammer
-  // localStorage on every keystroke.
+  // Mirror field changes into localStorage ONLY (never to the server) —
+  // but ONLY once the user has actually changed something (isDirty).
+  // Writing unconditionally on every open (the old behavior) created a
+  // fresh no-op draft for every booking you merely looked at, which is
+  // what caused the restore-toast above to fire on every single open.
   useEffect(() => {
-    if (!open) return;
+    if (!open || !isDirty) return;
     const timer = window.setTimeout(() => {
       try {
         window.localStorage.setItem(draftKey, currentSnapshot);
@@ -453,7 +466,7 @@ export function BookingDialog({
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [open, draftKey, currentSnapshot]);
+  }, [open, isDirty, draftKey, currentSnapshot]);
 
   const clearDraft = useCallback(() => {
     try { window.localStorage.removeItem(draftKey); } catch { /* ignore */ }
@@ -486,8 +499,11 @@ export function BookingDialog({
       setWarnOpen(true);
       return;
     }
+    // Nothing unsaved (isDirty is false) — safe to also wipe any leftover
+    // draft for this booking so it can't resurrect a stale toast next open.
+    try { window.localStorage.removeItem(draftKey); } catch { /* ignore */ }
     onClose();
-  }, [isDirty, onClose, readOnly]);
+  }, [isDirty, onClose, readOnly, draftKey]);
 
   const handleSave = (statusOverride?: BookingStatus, overrides?: { checkOut?: string; checkOutHalfDay?: boolean }) => {
     if (!fullName || !inDate || !outDate) return;
