@@ -382,6 +382,16 @@ export function BookingDialog({
   );
   latestSnapshotRef.current = currentSnapshot;
 
+  // isDirty must be computed here, BEFORE the local-draft block below,
+  // because that block references it (both directly and inside a hook
+  // dependency array). Declaring `isDirty` further down the file — as a
+  // previous edit mistakenly did — caused a genuine JS temporal-dead-zone
+  // crash ("Cannot access 'isDirty' before initialization") on every
+  // render, which is what took the whole page down. initialSnapshotRef is
+  // updated by the effect further below; reading it here is safe since
+  // refs don't have a TDZ.
+  const isDirty = open && initialSnapshotRef.current !== '' && currentSnapshot !== initialSnapshotRef.current;
+
   // ---------------- LOCAL DRAFT (crash/refresh safety net) ----------------
   // Requirement: nothing is written to the database while the user is
   // typing — only on Save. But if the tab is closed/crashes/refreshes
@@ -491,8 +501,6 @@ export function BookingDialog({
     }, 120);
     return () => window.clearTimeout(timer);
   }, [open, editBooking?.id]);
-
-  const isDirty = open && initialSnapshotRef.current !== '' && currentSnapshot !== initialSnapshotRef.current;
 
   const requestClose = useCallback(() => {
     if (!readOnly && isDirty) {
