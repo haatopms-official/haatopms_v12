@@ -273,37 +273,55 @@ export function BookingDialog({
   // immediately, and vice versa — the three panels always show the same
   // canonical name.
   const { map: passportMap, setRecord: setPassportRecord } = useSharedNamespace('passports', 'sayohat-passport-changed');
+    // Buffer-and-commit: the passport record is read ONCE per opened booking
+  // (hydration) and written ONCE on Save. While the user types, nothing
+  // leaves the component — no DB write, no remote overwrite, no flicker.
+  const passportHydratedForRef = useRef<string | null>(null);
+  // Keep a live pointer to the shared map so handleSave can merge without
+  // re-subscribing to it as a render dependency.
+  const passportMapRef = useRef(passportMap);
+  passportMapRef.current = passportMap;
+
   const passportSlice = editBooking
     ? (passportMap[editBooking.id] as Record<string, string> | undefined)
     : undefined;
-  const pLast = (passportSlice?.lastName ?? '').toString();
-  const pFirst = (passportSlice?.firstName ?? '').toString();
-  const pMiddle = (passportSlice?.middleName ?? '').toString();
 
-  // Passport → main fields. Non-empty passport values overwrite locals so
-  // saving in Guest Details is reflected here without reopening the dialog.
-  useEffect(() => {
-    if (!open || !editBooking) return;
-    if (pLast.trim() && pLast !== lastName) setLastName(pLast);
-    if (pFirst.trim() && pFirst !== firstName) setFirstName(pFirst);
-    if (pMiddle.trim() && pMiddle !== middleName) setMiddleName(pMiddle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, editBooking?.id, pLast, pFirst, pMiddle]);
 
-  // Main fields → passport. Push edits made here into the shared record so
-  // Guest Details and Anketa see them the next time they read.
+  // ─────────── HYDRATE ONCE (passport → main fields) ───────────
+  // Runs only when a different booking is opened. It deliberately does NOT
+  // depend on pLast/pFirst/pMiddle, so a background poll or realtime event
+  // can never reach into the inputs the user is currently typing in.
   useEffect(() => {
-    if (!open || !editBooking) return;
-    const current = (passportMap[editBooking.id] as Record<string, string> | undefined) || {};
-    const nl = lastName.trim();
-    const nf = firstName.trim();
-    const nm = middleName.trim();
-    if ((current.lastName ?? '') === nl
-      && (current.firstName ?? '') === nf
-      && (current.middleName ?? '') === nm) return;
-    setPassportRecord(editBooking.id, { ...current, lastName: nl, firstName: nf, middleName: nm });
+    if (!open || !editBooking) {
+      passportHydratedForRef.current = null;
+      return;
+    }
+    if (passportHydratedForRef.current === editBooking.id) return;
+
+    const slice = (passportMapRef.current[editBooking.id] as Record<string, string> | undefined) || {};
+    const hLast = (slice.lastName ?? '').toString().trim();
+    const hFirst = (slice.firstName ?? '').toString().trim();
+    const hMiddle = (slice.middleName ?? '').toString().trim();
+
+    // Nothing shared yet for this booking → wait; the poll will bring it in
+    // on a later render and we hydrate then (still exactly once).
+    if (!hLast && !hFirst && !hMiddle) return;
+
+    passportHydratedForRef.current = editBooking.id;
+    if (hLast) setLastName(hLast);
+    if (hFirst) setFirstName(hFirst);
+    if (hMiddle) setMiddleName(hMiddle);
+
+    // Re-baseline so hydration is not counted as a user edit — otherwise the
+    // "Есть несохранённые изменения" prompt would fire on a dialog the user
+    // never touched.
+    rebaselineSnapshotSoon();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, editBooking?.id, lastName, firstName, middleName]);
+  }, [open, editBooking?.id, passportMap]);
+
+  // NOTE: there is intentionally NO "main fields → passport" effect anymore.
+  // The commit happens in handleSave (see commitPassportRecord below).
+
 
   const dayDiff = inDate && outDate ? differenceInCalendarDays(parseISO(outDate), parseISO(inDate)) : 0;
   const todayISO = format(startOfDay(new Date()), 'yyyy-MM-dd');
@@ -544,6 +562,18 @@ export function BookingDialog({
     try { window.localStorage.removeItem(draftKey); } catch { /* ignore */ }
     onClose();
   }, [isDirty, onClose, readOnly, draftKey]);
+  // Single write point for the shared passport slice. Called ONLY from
+  // handleSave, i.e. only when the user presses «Сохранить изменения».
+  const commitPassportRecord = useCallback((bookingId: string) => {
+    const current = (passportMapRef.current[bookingId] as Record<string, string> | undefined) || {};
+    const nl = lastName.trim();
+    const nf = firstName.trim();
+    const nm = middleName.trim();
+    if ((current.lastName ?? '') === nl
+      && (current.firstName ?? '') === nf
+      && (current.middleName ?? '') === nm) return;
+    setPassportRecord(bookingId, { ...current, lastName: nl, firstName: nf, middleName: nm });
+  }, [lastName, firstName, middleName, setPassportRecord]);
 
   const handleSave = (statusOverride?: BookingStatus, overrides?: { checkOut?: string; checkOutHalfDay?: boolean }) => {
     if (!fullName || !inDate || !outDate) return;
@@ -605,9 +635,12 @@ export function BookingDialog({
         paymentConfirmedAt: paymentConfirmed ? (editBooking.paymentConfirmedAt || new Date().toISOString()) : undefined,
       });
       if (ok === false) return;
+      commitPassportRecord(editBooking.id);
     } else {
+
+      const newId = crypto.randomUUID();
       const ok = onSave({
-        id: crypto.randomUUID(), roomNumber, guestName: fullName, ...nameFields,
+        id: newId, roomNumber, guestName: fullName, ...nameFields,
         guestPhone, guestEmail,
         guestWhatsapp, guestTelegram, guestInstagram, guestCount,
         checkIn: effectiveIn, checkOut: effectiveOut, notes, status: finalStatus, price: cleanPrice,
@@ -622,11 +655,14 @@ export function BookingDialog({
         ...(lateCheckout ? { checkOutHalfDay: true } : {}),
       });
       if (ok === false) return;
+      commitPassportRecord(newId);
     }
     toast.success(t('bookingSaved'));
+    passportHydratedForRef.current = null;
     rebaselineSnapshotSoon();
     clearDraft();
     onClose();
+
   };
 
 
