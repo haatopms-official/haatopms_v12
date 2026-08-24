@@ -698,21 +698,24 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
     window.addEventListener('mouseup', up);
   }, []);
 
+  // Anchor: the scrollLeft at which TODAY's column is perfectly centered.
   const computeTodayScroll = useCallback((el: HTMLElement) => {
     const visibleWidth = Math.max(0, el.clientWidth - LABEL_WIDTH);
     const max = Math.max(0, el.scrollWidth - el.clientWidth);
-    // Admin opens with today 2 days from the left edge. After opening, all
-    // roles can keep extending the timeline in either direction.
-    const target = isAdmin
-      ? todayIdx * DAY_WIDTH - ADMIN_LEFT_OFFSET_DAYS * DAY_WIDTH
-      : todayIdx * DAY_WIDTH - visibleWidth / 2 + DAY_WIDTH / 2;
+    const target = todayIdx * DAY_WIDTH - visibleWidth / 2 + DAY_WIDTH / 2;
     return Math.max(0, Math.min(max, target));
-  }, [todayIdx, LABEL_WIDTH, isAdmin]);
+  }, [todayIdx, LABEL_WIDTH]);
+
+  // Shared with the bottom scrollbar so the thumb can shrink by distance.
+  const [centerScrollLeft, setCenterScrollLeft] = useState(0);
+  const [todayResetNonce, setTodayResetNonce] = useState(0);
 
   const scrollToToday = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     const next = computeTodayScroll(el);
+    setCenterScrollLeft(next);
+    setTodayResetNonce((n) => n + 1); // thumb snaps back to max width
     lastScrollLeftRef.current = next;
     el.scrollTo({ left: next, behavior: 'smooth' });
   }, [computeTodayScroll]);
@@ -723,10 +726,27 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
     if (el) {
       const initialLeft = computeTodayScroll(el);
       el.scrollLeft = initialLeft;
+      setCenterScrollLeft(initialLeft);
       lastScrollLeftRef.current = initialLeft;
       didInitialScroll.current = true;
     }
   }, [computeTodayScroll]);
+
+  // Keep the anchor correct when the viewport resizes or the timeline grows.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const recompute = () => setCenterScrollLeft(computeTodayScroll(el));
+    const ro = new ResizeObserver(recompute);
+    ro.observe(el);
+    window.addEventListener('resize', recompute);
+    recompute();
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', recompute);
+    };
+  }, [computeTodayScroll]);
+
 
   useEffect(() => {
     isAppendingRef.current = false;
@@ -2423,10 +2443,12 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
         <TimelineBottomScrollbar
           scrollRef={scrollRef}
           labelWidth={LABEL_WIDTH}
-          todayContentPx={todayIdx * DAY_WIDTH + DAY_WIDTH / 2}
+          centerScrollLeft={centerScrollLeft}
+          resetNonce={todayResetNonce}
           onDragStateChange={handleTimelineScrollbarDragState}
           onEdgeRequest={handleTimelineScrollbarEdgeRequest}
         />
+
       </div>
 
       <BookingDialog

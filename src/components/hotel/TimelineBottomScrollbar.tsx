@@ -3,16 +3,19 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react
 interface Props {
   scrollRef: React.RefObject<HTMLDivElement | null>;
   labelWidth: number;
-  todayContentPx: number;
+  /** scrollLeft value at which TODAY's column is perfectly centered */
+  centerScrollLeft: number;
+  /** bump this number to snap the thumb back to max width (Today button) */
+  resetNonce?: number;
   onDragStateChange?: (dragging: boolean) => void;
   onEdgeRequest?: (direction: 'past' | 'future') => void;
 }
 
-const MIN_THUMB_WIDTH = 56;       // floor — never disappears
-const MAX_THUMB_WIDTH_RATIO = 0.3; // at today
+const MIN_THUMB_WIDTH = 56;        // floor — never disappears
+const MAX_THUMB_WIDTH_RATIO = 0.3; // hard cap of the "normal" size
 const EDGE_AUTOSCROLL_STEP = 32;
 const EDGE_REQUEST_INTERVAL_MS = 180;
-const PROXIMITY_RANGE_PX = 4000;   // distance over which thumb breathes
+const PROXIMITY_RANGE_PX = 4000;   // distance over which the thumb shrinks to min
 
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const easeInOut = (t: number) => t * t * (3 - 2 * t);
@@ -20,10 +23,12 @@ const easeInOut = (t: number) => t * t * (3 - 2 * t);
 export function TimelineBottomScrollbar({
   scrollRef,
   labelWidth,
-  todayContentPx,
+  centerScrollLeft,
+  resetNonce,
   onDragStateChange,
   onEdgeRequest,
 }: Props) {
+
   const trackRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLDivElement>(null);
   const [metrics, setMetrics] = useState({ scrollLeft: 0, scrollWidth: 1, clientWidth: 1 });
@@ -32,17 +37,32 @@ export function TimelineBottomScrollbar({
   const [dragging, setDragging] = useState(false);
   const activeDragRef = useRef(false);
 
-  /** Thumb width breathes by distance from today (in pixels), not by ratio of content. */
-  const computeThumbWidth = useCallback((scrollLeft: number, clientWidth: number) => {
-    const viewport = Math.max(1, clientWidth - labelWidth);
-    const viewportCenter = scrollLeft + viewport / 2;
-    const distance = Math.abs(viewportCenter - todayContentPx);
-    const proximity = clamp(1 - distance / PROXIMITY_RANGE_PX, 0, 1);
-    const eased = easeInOut(proximity);
-    const maxWidth = Math.max(MIN_THUMB_WIDTH + 40, Math.round(trackWidth * MAX_THUMB_WIDTH_RATIO));
-    const width = MIN_THUMB_WIDTH + (maxWidth - MIN_THUMB_WIDTH) * eased;
-    return Math.round(Math.max(MIN_THUMB_WIDTH, Math.min(trackWidth - 8, width)));
-  }, [labelWidth, todayContentPx, trackWidth]);
+  /**
+   * Thumb width = "normal" size (visible-window ratio) at the Today-centered
+   * anchor, shrinking proportionally with the distance scrolled away from it.
+   */
+  const computeThumbWidth = useCallback(
+    (scrollLeft: number, clientWidth: number, scrollWidth: number) => {
+      if (trackWidth <= 0) return MIN_THUMB_WIDTH;
+      const maxScroll = Math.max(1, scrollWidth - clientWidth);
+      const baseWidth = clamp(
+        Math.round(trackWidth * (clientWidth / Math.max(1, scrollWidth))),
+        MIN_THUMB_WIDTH + 40,
+        Math.round(trackWidth * MAX_THUMB_WIDTH_RATIO),
+      );
+      const center = clamp(centerScrollLeft, 0, maxScroll);
+      const distance = Math.abs(scrollLeft - center);
+      const range = Math.min(
+        PROXIMITY_RANGE_PX,
+        Math.max(1, Math.max(center, maxScroll - center)),
+      );
+      const t = easeInOut(clamp(distance / range, 0, 1)); // 0 = at today, 1 = far away
+      const width = baseWidth - (baseWidth - MIN_THUMB_WIDTH) * t;
+      return Math.round(clamp(width, MIN_THUMB_WIDTH, trackWidth - 8));
+    },
+    [centerScrollLeft, trackWidth],
+  );
+
 
   const measure = useCallback(() => {
     const el = scrollRef.current;
@@ -81,9 +101,26 @@ export function TimelineBottomScrollbar({
     return () => ro.disconnect();
   }, []);
 
+  // Today button pressed → immediately report the centered position so the
+  // thumb renders at max width while the smooth scroll animation runs.
+  useEffect(() => {
+    if (resetNonce === undefined) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    setMetrics({
+      scrollLeft: centerScrollLeft,
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+    });
+  }, [resetNonce, centerScrollLeft, scrollRef]);
+
   const viewport = Math.max(1, metrics.clientWidth - labelWidth);
   const maxScroll = Math.max(1, metrics.scrollWidth - metrics.clientWidth);
-  const liveThumbWidth = trackWidth > 0 ? computeThumbWidth(metrics.scrollLeft, metrics.clientWidth) : MIN_THUMB_WIDTH;
+  const liveThumbWidth =
+    trackWidth > 0
+      ? computeThumbWidth(metrics.scrollLeft, metrics.clientWidth, metrics.scrollWidth)
+      : MIN_THUMB_WIDTH;
+
   const maxThumbLeft = Math.max(0, trackWidth - liveThumbWidth - 8);
   const liveThumbLeft = clamp((metrics.scrollLeft / maxScroll) * maxThumbLeft, 0, maxThumbLeft);
 
@@ -147,25 +184,22 @@ export function TimelineBottomScrollbar({
         }
       }
 
+
       const trackLen = trackRef.current?.getBoundingClientRect().width ?? trackWidth;
       const maxScrollNow = Math.max(1, el.scrollWidth - el.clientWidth);
-      const liveWidth = computeThumbWidth(anchorScroll + (pointerX - startPointerX) * (maxScrollNow / Math.max(1, trackLen - MIN_THUMB_WIDTH - 8)), el.clientWidth);
-      const usableTrack = Math.max(1, trackLen - liveWidth - 8);
 
-      // Pointer delta since drag start → scroll delta via current ratio.
+      // Map pointer delta → scroll delta using the CURRENT thumb width.
+      const provisionalWidth = computeThumbWidth(el.scrollLeft, el.clientWidth, el.scrollWidth);
+      const usableTrack = Math.max(1, trackLen - provisionalWidth - 8);
       const pointerDelta = pointerX - startPointerX;
-      const scrollDelta = pointerDelta * (maxScrollNow / usableTrack);
-      let target = anchorScroll + scrollDelta;
+      let target = anchorScroll + pointerDelta * (maxScrollNow / usableTrack);
 
-      // Past edge: if the pointer wants to go before day 0, ask the grid
-      // to prepend more past days. Clamp scroll to 0 until they arrive
-      // (next frame we'll compensate via the widthDelta path above).
+      // Past edge: ask the grid to prepend more past days.
       if (target < 0) {
         requestEdge('past');
         target = 0;
       }
-      // Future edge: same idea, but always safe because the grid can
-      // extend the future without shifting scrollLeft.
+      // Future edge: ask the grid to append more future days.
       if (target > maxScrollNow) {
         requestEdge('future');
         target = maxScrollNow;
@@ -173,7 +207,10 @@ export function TimelineBottomScrollbar({
 
       el.scrollLeft = target;
 
-      const visualLeft = clamp((target / maxScrollNow) * usableTrack, 0, usableTrack);
+      // Resize the thumb for the position we just landed on (distance-based).
+      const liveWidth = computeThumbWidth(target, el.clientWidth, el.scrollWidth);
+      const usableNow = Math.max(1, trackLen - liveWidth - 8);
+      const visualLeft = clamp((target / maxScrollNow) * usableNow, 0, usableNow);
       writeThumb(visualLeft, liveWidth);
 
       lastScrollWidth = el.scrollWidth;
