@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { differenceInCalendarDays, parseISO, startOfDay } from 'date-fns';
 import { toast } from 'sonner';
+import { isEditing, onEditorsClosed } from '@/lib/editingGate';
 import { Booking } from '@/types/hotel';
 import { supabase } from '@/integrations/supabase/client';
 import { bookingToRow, guestArgs, rowToBooking } from '@/lib/sheetMapper';
@@ -62,11 +63,6 @@ export function useBookings() {
   }, []);
 
   // 1) initial load — join the main table so contacts come along.
-  // fetchSeqRef guards against out-of-order responses: if two reloads are
-  // in flight (e.g. one from the guests write, one from the bookings write
-  // of the same save) and the older one resolves LAST, we must not let it
-  // overwrite the newer data — that race was the actual cause of bookings
-  // randomly "disappearing" for a frame before reappearing.
   const fetchSeqRef = useRef(0);
   const reload = useCallback(async () => {
     const seq = ++fetchSeqRef.current;
@@ -75,22 +71,26 @@ export function useBookings() {
       .select('*, guests:main_id ( main_id, fio, tel, whats, email, telega, inst, guest_kind )')
       .order('no', { ascending: true });
     if (error) { console.error('[bookings] load', error); return; }
-    if (seq !== fetchSeqRef.current) return; // a newer reload already started/finished — drop this stale result
+    if (seq !== fetchSeqRef.current) return; // drop stale result
     applyLocal((data ?? []).map((r) => rowToBooking(r as Record<string, unknown>)));
   }, [applyLocal]);
 
-  // Debounced trigger: collapses bursts of realtime events (one save often
-  // fires both a `guests` and a `bookings` change) into a single reload
-  // instead of one full-table refetch per event, which is what was causing
-  // the visible flicker/lag whenever anyone saved a booking.
+  // Debounced trigger: defers refetches while a dialog/editor is open
   const reloadTimerRef = useRef<number | null>(null);
+  const pendingRef = useRef(false);
   const scheduleReload = useCallback(() => {
+    if (isEditing()) { pendingRef.current = true; return; }
     if (reloadTimerRef.current !== null) window.clearTimeout(reloadTimerRef.current);
     reloadTimerRef.current = window.setTimeout(() => {
       reloadTimerRef.current = null;
       void reload();
     }, 300);
   }, [reload]);
+
+  // Flush whatever was deferred as soon as all open dialogs close
+  useEffect(() => onEditorsClosed(() => {
+    if (pendingRef.current) { pendingRef.current = false; void reload(); }
+  }), [reload]);
 
   useEffect(() => { void reload(); }, [reload]);
 
@@ -108,9 +108,13 @@ export function useBookings() {
     };
   }, [scheduleReload]);
 
-  // 3) refetch when the tab regains focus (covers dropped sockets)
+  // 3) refetch when the tab regains focus (deferred if editing)
   useEffect(() => {
-    const onFocus = () => { void reload(); };
+    const onFocus = () => {
+      if (isEditing()) { pendingRef.current = true; return; }
+      void reload();
+    };
+
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onFocus);
     return () => {
@@ -162,7 +166,6 @@ export function useBookings() {
   const removeBooking = useCallback((id: string) => {
     applyLocal(listRef.current.filter((b) => b.id !== id));
     void (async () => {
-      // Delete path — never delete the guest, only the stay
       const { error } = await supabase.from('bookings').delete().eq('booking_uid', id);
       if (error) {
         console.error('[bookings] delete', error);

@@ -89,9 +89,36 @@ interface BookingDialogProps {
 }
 
 export function BookingDialog({
-  open, onClose, onSave, onUpdate, onDelete, roomNumber, checkIn, checkOut, editBooking, bedIndex, prefillName,
+  open, onClose, onSave, onUpdate, onDelete, roomNumber, checkIn, checkOut, editBooking: editBookingProp, bedIndex, prefillName,
   initialEarlyCheckin = false, initialLateCheckout = false, extraGuestSlots = 0, readOnly = false,
 }: BookingDialogProps) {
+
+  // ─────────── FREEZE-ON-OPEN ───────────
+  // useBookings().reload() rebuilds EVERY Booking object on each realtime
+  // event / tab focus / 3s poll. Reading the prop directly means every remote
+  // refresh gives a new object identity, re-runs hydration, and wipes what the
+  // user is typing. We snapshot the booking ONCE per opened id and render from
+  // the snapshot. The prop is only re-read when a DIFFERENT booking is opened.
+  const frozenRef = useRef<Booking | null>(null);
+  const frozenIdRef = useRef<string | null>(null);
+  if (!open) {
+    frozenRef.current = null;
+    frozenIdRef.current = null;
+  } else if (editBookingProp) {
+    if (frozenIdRef.current !== editBookingProp.id) {
+      frozenIdRef.current = editBookingProp.id;
+      frozenRef.current = editBookingProp;
+    }
+  } else {
+    frozenRef.current = null;
+    frozenIdRef.current = null;
+  }
+  /** Use `editBooking` exactly as before everywhere below — it is now frozen. */
+  const editBooking = frozenRef.current;
+
+  /** Call after a successful save so the frozen copy picks up server truth next open. */
+  const releaseFreeze = useCallback(() => { frozenIdRef.current = null; }, []);
+
 
   const { t, lang } = useI18n();
   const { user } = useAuth();
@@ -106,7 +133,10 @@ export function BookingDialog({
   const categoryMaxGuests = Math.max(1, roomCategory?.maxGuests ?? 1);
   const effectiveMaxGuests = Math.max(categoryMaxGuests, categoryMaxGuests + Math.max(0, extraGuestSlots));
   const [residency, setResidency] = useState<'resident' | 'nonResident'>(editBooking?.residency ?? 'resident');
-  useEffect(() => { setResidency(editBooking?.residency ?? 'resident'); }, [editBooking, open]);
+  // dep was `editBooking` (a NEW object on every realtime reload) → this reset
+  // residency mid-typing. Key on the id + open only.
+  useEffect(() => { setResidency(editBooking?.residency ?? 'resident'); }, [editBooking?.id, open]);
+
   const emptyArr = useMemo(() => Array.from({ length: categoryMaxGuests }, () => 0), [categoryMaxGuests]);
   const categoryRateObj = roomCategoryId
     ? (categoryRates[roomCategoryId] ?? { resident: emptyArr, nonResident: emptyArr })
@@ -200,8 +230,19 @@ export function BookingDialog({
   const [receiptOpen, setReceiptOpen] = useState(false);
   const isCheckedOut = editBooking?.status === 'checked-out';
 
+  // Guards hydration so it happens ONCE per opened entity. Without this, any
+  // dependency change (even a frozen one, e.g. checkIn/prefillName churn from
+  // the parent grid) refills the inputs and erases in-progress typing.
+  const hydratedForRef = useRef<string | null>(null);
+
   useEffect(() => {
+    if (!open) { hydratedForRef.current = null; return; }
+    const hydrationKey = editBooking?.id ?? `new:${roomNumber}:${bedIndex ?? 'x'}`;
+    if (hydratedForRef.current === hydrationKey) return;
+    hydratedForRef.current = hydrationKey;
+
     if (editBooking) {
+
       // Prefer structured name fields (source of truth). Fall back to splitting
       // the legacy denormalized `guestName` ONLY for bookings created before
       // the split — and even then we put everything into firstName so we don't
@@ -264,7 +305,11 @@ export function BookingDialog({
       setPayments([]);
       setPaymentConfirmed(false);
     }
-  }, [editBooking, checkIn, checkOut, open, prefillName, initialEarlyCheckin, initialLateCheckout]);
+    // PRIMITIVES ONLY. `editBooking` (object) must never be a dependency here —
+    // that was the root cause of the disappearing text.
+  }, [open, editBooking?.id, roomNumber, bedIndex, checkIn, checkOut, prefillName,
+      initialEarlyCheckin, initialLateCheckout, canBackdate]);
+
 
   // ─────────── Live sync of the surname/name/middle-name fields with the
   // shared passport record (backed by the same `hotel_app_state` engine that
@@ -296,7 +341,12 @@ export function BookingDialog({
       passportHydratedForRef.current = null;
       return;
     }
+    // useSharedNamespace polls every 3s and listens to realtime → `passportMap`
+    // changes identity while the user types. Never let it touch the inputs once
+    // the user has edited anything.
+    if (isDirtyRef.current) return;
     if (passportHydratedForRef.current === editBooking.id) return;
+
 
     const slice = (passportMapRef.current[editBooking.id] as Record<string, string> | undefined) || {};
     const hLast = (slice.lastName ?? '').toString().trim();
@@ -430,6 +480,10 @@ export function BookingDialog({
   // updated by the effect further below; reading it here is safe since
   // refs don't have a TDZ.
   const isDirty = open && initialSnapshotRef.current !== '' && currentSnapshot !== initialSnapshotRef.current;
+  // Live mirror so effects can read dirtiness without taking it as a dependency.
+  const isDirtyRef = useRef(false);
+  isDirtyRef.current = isDirty;
+
 
   // ---------------- LOCAL DRAFT (crash/refresh safety net) ----------------
   // Requirement: nothing is written to the database while the user is
@@ -659,9 +713,12 @@ export function BookingDialog({
     }
     toast.success(t('bookingSaved'));
     passportHydratedForRef.current = null;
+    hydratedForRef.current = null;   // allow a fresh hydrate on next open
+    releaseFreeze();                 // next open re-reads the (now updated) server row
     rebaselineSnapshotSoon();
     clearDraft();
     onClose();
+
 
   };
 
@@ -1202,22 +1259,14 @@ export function BookingDialog({
                         // the booking transitions to fully paid.
                         triggerFullyPaidOverlay();
                       }
-                      // Auto-save the payment immediately when editing an existing booking
-                      if (editBooking?.id && onUpdate) {
-                        onUpdate(editBooking.id, {
-                          payments: nextPayments,
-                          paymentType,
-                          paymentAmount: effectiveTotal,
-                          price: effectiveTotal,
-                          ...(hasSegments ? { segments: segmentsList } : {}),
-                          paymentConfirmed: justFullyPaid,
-                          paymentConfirmedAt: justFullyPaid
-                            ? (editBooking.paymentConfirmedAt || new Date().toISOString())
-                            : editBooking.paymentConfirmedAt,
-                        });
-                        rebaselineSnapshotSoon();
-                      }
+                      // NO DB WRITE HERE. The payment lives in local `payments`
+                      // state and is persisted by handleSave together with
+                      // everything else, exactly once, on «Сохранить».
+                      toast.message(lang === 'ru'
+                        ? 'Платёж добавлен — нажмите «Сохранить», чтобы записать'
+                        : 'Payment added — press Save to store it');
                     }}
+
                     className="h-10 w-full gap-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 px-4 text-white shadow-md shadow-emerald-500/25 hover:from-emerald-500 hover:to-emerald-500 md:w-auto disabled:opacity-50"
                   >
                     <Check className="h-3.5 w-3.5" />

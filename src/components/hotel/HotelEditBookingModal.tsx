@@ -62,6 +62,7 @@ export function HotelEditBookingModal({ open, onClose, onSave, onUpdate, onDelet
   const [warnOpen, setWarnOpen] = useState(false);
   const initialSnapshotRef = useRef<string>('');
   const latestSnapshotRef = useRef<string>('');
+  
   useEffect(() => {
     if (!open) { setSurnameGlow(false); setWarnOpen(false); return; }
     const f = setTimeout(() => { lastNameRef.current?.focus(); setSurnameGlow(true); }, 180);
@@ -69,9 +70,14 @@ export function HotelEditBookingModal({ open, onClose, onSave, onUpdate, onDelet
     return () => { clearTimeout(f); clearTimeout(o); };
   }, [open]);
 
-  
+  const hydratedForRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (!open) { hydratedForRef.current = null; return; }
+    const key = booking?.id ?? `new:${roomNumber}`;
+    if (hydratedForRef.current === key) return;
+    hydratedForRef.current = key;
+
     if (booking) {
       const hasStructured =
         booking.guestLastName !== undefined ||
@@ -103,7 +109,8 @@ export function HotelEditBookingModal({ open, onClose, onSave, onUpdate, onDelet
       setCheckIn(today); setCheckOut(tomorrow); setStatus('booked');
       setPrice('');
     }
-  }, [booking, open]);
+  }, [booking?.id, open, roomNumber]);
+
 
   const nights = checkIn && checkOut ? differenceInCalendarDays(parseISO(checkOut), parseISO(checkIn)) : 0;
 
@@ -124,12 +131,16 @@ export function HotelEditBookingModal({ open, onClose, onSave, onUpdate, onDelet
     return base + extras * extraRate;
   }, [categoryRates, categoryId, residency, guestCount]);
   const autoTotal = nights > 0 && perNightRate > 0 ? Math.round(nights * perNightRate) : 0;
+  
   useEffect(() => {
     if (!open) return;
-    if (!price.trim() && autoTotal > 0) setPrice(String(autoTotal));
-    if (!booking && autoTotal > 0) setPrice(String(autoTotal));
+    // Only auto-fill an EMPTY price, and only for new bookings. The old second
+    // line overwrote a price the user had just typed whenever guestCount or the
+    // category rate changed.
+    if (!booking && !price.trim() && autoTotal > 0) setPrice(String(autoTotal));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoTotal, open, booking]);
+  }, [autoTotal, open, booking?.id]);
+
   const guestName = useMemo(
     () => [lastName.trim(), firstName.trim(), middleName.trim()].filter(Boolean).join(' '),
     [lastName, firstName, middleName],
@@ -187,6 +198,7 @@ export function HotelEditBookingModal({ open, onClose, onSave, onUpdate, onDelet
     }
     toast.success(t('bookingSaved'));
     initialSnapshotRef.current = currentSnapshot;
+    hydratedForRef.current = null;
     onClose();
   };
 
@@ -261,9 +273,6 @@ export function HotelEditBookingModal({ open, onClose, onSave, onUpdate, onDelet
                 </span>
               )}
             </div>
-
-
-
 
             {/* Row: Surname + Name + Middle name */}
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -483,4 +492,3 @@ function FieldShell({
     </div>
   );
 }
-

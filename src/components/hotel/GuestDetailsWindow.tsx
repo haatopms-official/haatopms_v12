@@ -242,35 +242,43 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
     passportRef.current = passportData;
   }, [passportData]);
 
+  // Hydrate ONCE per guest. `passportMap[storageKey]` was a dependency, and the
+  // shared namespace refreshes it on realtime + a 3s poll — that is why fields
+  // you were typing into kept snapping back to the stored values.
+  const passportMapRef = useRef(passportMap);
+  passportMapRef.current = passportMap;
+
   useEffect(() => {
     if (typeof window === 'undefined' || !storageKey) {
       setPassport(EMPTY_PASSPORT);
+      hydratedKey.current = null;
       return;
     }
+    if (hydratedKey.current === storageKey) return;   // already hydrated
+    if (dirtyRef.current) return;                     // user is typing — hands off
+    hydratedKey.current = storageKey;
 
-    const cloud = passportMap[storageKey] as Record<string, unknown> | undefined;
-    if (cloud) {
-      setPassport(fromCloud(cloud));
-      hydratedKey.current = storageKey;
-      return;
-    }
+    const cloud = passportMapRef.current[storageKey] as Record<string, unknown> | undefined;
+    if (cloud) { setPassport(fromCloud(cloud)); return; }
 
-    if (hydratedKey.current !== storageKey) {
-      hydratedKey.current = storageKey;
-      try {
-        const raw = window.localStorage.getItem(legacyLocalStorageKey);
-        if (raw) {
-          const legacy = JSON.parse(raw) as Record<string, unknown>;
-          const parsed = fromCloud(legacy);
-          setPassport(parsed);
-          setPassportRecord(storageKey, toCloud(undefined, parsed));
-          window.localStorage.removeItem(legacyLocalStorageKey);
-          return;
-        }
-      } catch { /* ignore */ }
-    }
+    try {
+      const raw = window.localStorage.getItem(legacyLocalStorageKey);
+      if (raw) {
+        const parsed = fromCloud(JSON.parse(raw) as Record<string, unknown>);
+        setPassport(parsed);
+        window.localStorage.removeItem(legacyLocalStorageKey);
+        // NOTE: no setPassportRecord() here. Writing during hydration is a
+        // DB write the user never asked for; the migration is persisted on
+        // the next explicit save instead.
+        dirtyRef.current = true;   // so the legacy data does get saved on close
+        return;
+      }
+    } catch { /* ignore */ }
+
     setPassport(EMPTY_PASSPORT);
-  }, [storageKey, passportMap[storageKey]]);
+    // `passportMap` intentionally NOT a dependency.
+  }, [storageKey, open]);
+
 
   const handleFieldChange = (field: keyof PassportData, value: any) => {
     dirtyRef.current = true;
@@ -292,7 +300,10 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
     { label: 'Email', value: guest.guestEmail, icon: Mail },
   ].filter((row) => row.value.trim());
 
+  useEffect(() => { if (!open) hydratedKey.current = null; }, [open]);
+
   const requestClose = () => {
+
     if (!dirtyRef.current) { onClose(); return; }
     setConfirmClose(true);
   };
