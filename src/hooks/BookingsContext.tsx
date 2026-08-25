@@ -129,10 +129,23 @@ export function BookingsProvider({ children }: { children: React.ReactNode }) {
     [inner, log, actor],
   );
 
-  const value = useMemo<Ctx>(
-    () => ({ bookings: inner.bookings, addBooking, removeBooking, removeBookings, updateBooking }),
-    [inner.bookings, addBooking, removeBooking, removeBookings, updateBooking],
-  );
+const value = useMemo<Ctx>(
+  () => ({
+    bookings: inner.bookings,
+    addBooking,
+    removeBooking,
+    removeBookings,
+    updateBooking,
+  }),
+  [
+    inner.bookings,
+    addBooking,
+    removeBooking,
+    removeBookings,
+    updateBooking,
+  ],
+);
+
 
   return <BookingsContext.Provider value={value}>{children}</BookingsContext.Provider>;
 }

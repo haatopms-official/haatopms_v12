@@ -32,7 +32,14 @@ export function HotelDashboardBody({
   const { pathname, search } = useLocation();
   const navigate = useNavigate();
   const isAdminRoute = pathname.startsWith("/admin");
- const { bookings, addBooking, removeBooking, removeBookings, updateBooking } = useBookingsContext();
+  const {
+    bookings,
+    addBooking,
+    removeBooking,
+    removeBookings,
+    updateBooking,
+  } = useBookingsContext();
+
   const { rooms } = useHotelGrid();
   const [internalViewMode, setInternalViewMode] = useState<"tiles" | "timeline">("timeline");
   const viewMode = controlledViewMode ?? internalViewMode;
@@ -48,7 +55,7 @@ export function HotelDashboardBody({
   const [editRoomNumber, setEditRoomNumber] = useState<number | null>(null);
   const [editBookingId, setEditBookingId] = useState<string | null>(null);
   const [focusBookingId, setFocusBookingId] = useState<string | null>(null);
-  const { focusBookingRequest, clearFocusRequest, criticalBookingIds } = useNotifications();
+  const { focusBookingRequest, clearFocusRequest } = useNotifications();
 
   useEffect(() => {
     if (!focusBookingRequest) return;
@@ -68,16 +75,13 @@ export function HotelDashboardBody({
           ?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     }
-  }, []);
+  }, [setViewMode]);
 
   useEffect(() => {
     if (focusBookingId) setViewMode("timeline");
-  }, [focusBookingId]);
+  }, [focusBookingId, setViewMode]);
 
-  // Reset to the main (timeline) grid whenever the navbar logo dispatches
-  // `workspace:reset`. Fires no matter which sub-view the user is on, so a
-  // click on the hotel name/logo in tiles view flips straight back to the
-  // main grid. Applies for superuser, admin and manager panels.
+  // Reset to the main (timeline) grid whenever the navbar logo dispatches `workspace:reset`.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const handler = () => {
@@ -93,15 +97,11 @@ export function HotelDashboardBody({
     return () => window.removeEventListener("workspace:reset", handler);
   }, [setViewMode]);
 
-  // Bridge the "hotel:change-room" custom event from the BookingDialog when
-  // it's opened from the tile (second) grid. HotelRoomGrid only listens
-  // while mounted, so if the operator is on the tile view we must first
-  // flip to the timeline, then re-dispatch the event once the grid has
-  // mounted and attached its own listener.
+  // Bridge the "hotel:change-room" custom event from the BookingDialog
   useEffect(() => {
     if (typeof window === "undefined") return;
     const handler = (ev: Event) => {
-      if (viewMode === "timeline") return; // grid already handles it
+      if (viewMode === "timeline") return;
       const detail = (ev as CustomEvent).detail;
       setViewMode("timeline");
       window.requestAnimationFrame(() => {
@@ -114,11 +114,7 @@ export function HotelDashboardBody({
     return () => window.removeEventListener("hotel:change-room", handler);
   }, [viewMode, setViewMode]);
 
-
-  // Accept `?focus=<bookingId>` from external entry points (e.g. the
-  // Superuser Booking History "Show in grid" button). When present, switch
-  // to the timeline, scroll the grid into view, glow the bar, then clear
-  // the search param so refreshes don't keep re-triggering it.
+  // Accept `?focus=<bookingId>` from external entry points
   useEffect(() => {
     const params = new URLSearchParams(
       typeof search === "string"
@@ -140,7 +136,6 @@ export function HotelDashboardBody({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
-
   const handleFocusConsumed = useCallback(() => {
     setFocusBookingId(null);
   }, []);
@@ -148,7 +143,7 @@ export function HotelDashboardBody({
   const goToBookingOnGrid = useCallback((bookingId: string) => {
     setViewMode("timeline");
     setFocusBookingId(bookingId);
-  }, []);
+  }, [setViewMode]);
 
   const handleAddBooking = useCallback((b: Booking) => {
     const ok = addBooking(b);
@@ -238,7 +233,7 @@ export function HotelDashboardBody({
             bookings={filteredBookings}
             conflictBookings={bookings}
             onAddBooking={handleAddBooking}
-     onDeleteBooking={removeBooking}
+            onDeleteBooking={removeBooking}
             onDeleteBookings={removeBookings}
             onUpdateBooking={handleUpdateBooking}
             focusBookingId={focusBookingId}
