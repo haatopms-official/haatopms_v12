@@ -163,7 +163,7 @@ export function useBookings() {
     return true;
   }, [applyLocal, persistBooking, reload, t]);
 
-  const removeBooking = useCallback((id: string) => {
+ const removeBooking = useCallback((id: string) => {
     applyLocal(listRef.current.filter((b) => b.id !== id));
     void (async () => {
       const { error } = await supabase.from('bookings').delete().eq('booking_uid', id);
@@ -174,5 +174,22 @@ export function useBookings() {
     })();
   }, [applyLocal, reload]);
 
-  return { bookings, addBooking, removeBooking, updateBooking };
-}
+  // Bulk hard-delete: wipes many bookings from local state AND from
+  // public.bookings in ONE request. Used when a whole category or a room
+  // number is deleted — every indicator (summary cards, status filter,
+  // manager/director stats) derives from this list, so all counts drop
+  // immediately, and the realtime DELETE event refreshes every other browser.
+  const removeBookings = useCallback((ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    const idSet = new Set(ids);
+    applyLocal(listRef.current.filter((b) => !idSet.has(b.id)));
+    void (async () => {
+      const { error } = await supabase.from('bookings').delete().in('booking_uid', ids);
+      if (error) {
+        console.error('[bookings] bulk delete', error);
+        void reload();
+      }
+    })();
+  }, [applyLocal, reload]);
+
+  return { bookings, addBooking, removeBooking, removeBookings, updateBooking };

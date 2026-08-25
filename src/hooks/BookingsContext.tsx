@@ -8,6 +8,7 @@ type Ctx = {
   bookings: Booking[];
   addBooking: (b: Booking) => boolean;
   removeBooking: (id: string) => void;
+  removeBookings: (ids: string[]) => void;
   updateBooking: (id: string, updates: Partial<Booking>) => boolean;
 };
 
@@ -79,6 +80,36 @@ export function BookingsProvider({ children }: { children: React.ReactNode }) {
     },
     [inner, log, actor],
   );
+  const removeBookings = useCallback(
+    (ids: string[]) => {
+      if (!ids || ids.length === 0) return;
+      const targets = inner.bookings.filter((b) => ids.includes(b.id));
+      inner.removeBookings(ids);
+      // One audit entry per wiped booking (traceable in history)…
+      targets.forEach((b) => {
+        log({
+          actor,
+          category: 'booking',
+          action: 'booking.deleted',
+          summary: `Deleted booking #${b.roomNumber}${b.guestName ? ` (${b.guestName})` : ''}`,
+          details: { ...b },
+        });
+      });
+      // …plus one summary entry for the whole wipe.
+      log({
+        actor,
+        category: 'system',
+        action: 'bookings.wiped',
+        summary: `Wiped ${targets.length} booking(s) (category/room deletion)`,
+        details: {
+          deletedCount: targets.length,
+          deletedBookingIds: targets.map((b) => b.id),
+          rooms: Array.from(new Set(targets.map((b) => b.roomNumber))).sort((a, b) => a - b),
+        },
+      });
+    },
+    [inner, log, actor],
+  );
 
   const updateBooking = useCallback(
     (id: string, updates: Partial<Booking>) => {
@@ -99,8 +130,8 @@ export function BookingsProvider({ children }: { children: React.ReactNode }) {
   );
 
   const value = useMemo<Ctx>(
-    () => ({ bookings: inner.bookings, addBooking, removeBooking, updateBooking }),
-    [inner.bookings, addBooking, removeBooking, updateBooking],
+    () => ({ bookings: inner.bookings, addBooking, removeBooking, removeBookings, updateBooking }),
+    [inner.bookings, addBooking, removeBooking, removeBookings, updateBooking],
   );
 
   return <BookingsContext.Provider value={value}>{children}</BookingsContext.Provider>;

@@ -152,13 +152,18 @@ export function HotelGridProvider({ children }: { children: React.ReactNode }) {
     }));
   }, [setData]);
 
-  const removeCategory = useCallback((id: string) => {
-    setData((prev) => ({
-      ...prev,
-      removedCategoryIds: Array.from(new Set([...(prev.removedCategoryIds ?? []), id])),
-      extraCategories: (prev.extraCategories ?? []).filter((c) => c.id !== id),
-      extraRooms: (prev.extraRooms ?? []).filter((r) => r.category !== id),
-    }));
+ const removeCategory = useCallback((id: string) => {
+    setData((prev) => {
+      const nextRates = { ...(prev.categoryRates ?? {}) };
+      delete nextRates[id];
+      return {
+        ...prev,
+        removedCategoryIds: Array.from(new Set([...(prev.removedCategoryIds ?? []), id])),
+        extraCategories: (prev.extraCategories ?? []).filter((c) => c.id !== id),
+        extraRooms: (prev.extraRooms ?? []).filter((r) => r.category !== id),
+        categoryRates: nextRates,
+      };
+    });
   }, [setData]);
 
 const addRoom = useCallback((categoryId: string, roomNumber: number) => {

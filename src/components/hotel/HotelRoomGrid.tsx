@@ -37,6 +37,8 @@ interface RoomGridProps {
   conflictBookings?: Booking[];
   onAddBooking: (b: Booking) => void;
   onDeleteBooking: (id: string) => void;
+  /** Bulk hard-delete (category / room wipe). Falls back to onDeleteBooking if omitted. */
+  onDeleteBookings?: (ids: string[]) => void;
   onUpdateBooking: (id: string, updates: Partial<Booking>) => void;
   /** When set, the grid will scroll to that booking and play a 5s glow. */
   focusBookingId?: string | null;
@@ -260,7 +262,7 @@ function bucketBookings(
   return { byRoom, byBed };
 }
 
-export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBooking, onDeleteBooking, onUpdateBooking, focusBookingId, onFocusConsumed, labelWidth }: RoomGridProps) {
+export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBooking, onDeleteBooking, onDeleteBookings, onUpdateBooking, focusBookingId, onFocusConsumed, labelWidth }: RoomGridProps) {
   const LABEL_WIDTH = labelWidth ?? DEFAULT_LABEL_WIDTH;
   const { t, lang } = useI18n();
   const { categories, rooms, categoryRates, removeCategory, removeRoom, setCategoryRate } = useHotelGrid();
@@ -298,14 +300,14 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
   // When a superuser opens the delete dialog for a category that has no
   // bookings at all, skip the "bookings will be wiped" step and go straight
   // to the final "are you sure" prompt.
-  useEffect(() => {
-    if (!deleteTarget || deleteTarget.type !== 'category' || !isSuperuser) return;
+ useEffect(() => {
+    if (!deleteTarget || deleteTarget.type !== 'category') return;
     const catRoomNumbers = new Set(
       rooms.filter((r) => r.category === deleteTarget.id).map((r) => r.number),
     );
     const hasBookings = bookings.some((b) => catRoomNumbers.has(b.roomNumber));
     if (!hasBookings) setDeleteStep(2);
-  }, [deleteTarget, isSuperuser, rooms, bookings]);
+  }, [deleteTarget, rooms, bookings]);
   const [addCategoryOpen, setAddCategoryOpen] = useState(false);
   const [addRoomCategoryId, setAddRoomCategoryId] = useState<string | null>(null);
   const [rateEditCategoryId, setRateEditCategoryId] = useState<string | null>(null);
@@ -334,57 +336,42 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
     });
   }, [setExtraPersons]);
 
+ // Bulk delete helper: prefers the single-request bulk prop, falls back to
+  // per-booking deletes if a parent hasn't been updated yet.
+  const deleteBookingsBulk = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      if (onDeleteBookings) onDeleteBookings(ids);
+      else ids.forEach((id) => onDeleteBooking(id));
+    },
+    [onDeleteBookings, onDeleteBooking],
+  );
+
   const confirmDelete = useCallback(() => {
     if (!deleteTarget) return;
+    const actor = {
+      username: user?.username ?? 'superuser',
+      role: (user?.role ?? 'superuser') as never,
+      adminId: null,
+    };
+
     if (deleteTarget.type === 'category') {
-      // Superuser hard-delete flow: first press wipes every booking that
-      // ever lived in any of this category's rooms, from every status list
-      // (ожидают потверждения / забронированы / проживают / выехали / на
-      // обслуживании / выехал обслуживание / грязный / убрано). Second
-      // press then removes the category itself. Everything is written to
-      // the audit / login history so the deletion is traceable.
-      if (isSuperuser && deleteStep === 1) {
-        const catRoomNumbers = new Set(
-          rooms.filter((r) => r.category === deleteTarget.id).map((r) => r.number),
-        );
-        const affected = bookings.filter((b) => catRoomNumbers.has(b.roomNumber));
-        // Wipe every affected booking regardless of status.
-        affected.forEach((b) => {
-          try { onDeleteBooking(b.id); } catch { /* ignore */ }
-          try {
-            logAudit({
-              actor: {
-                username: user?.username ?? 'superuser',
-                role: (user?.role ?? 'superuser') as never,
-                adminId: null,
-              },
-              category: 'booking',
-              action: 'booking.deleted',
-              summary:
-                (lang === 'ru' ? 'Удалена бронь' : 'Booking deleted') +
-                ` · ${lang === 'ru' ? 'номер' : 'room'} ${b.roomNumber} · ${b.status}`,
-              details: {
-                bookingId: b.id,
-                roomNumber: b.roomNumber,
-                status: b.status,
-                checkIn: b.checkIn,
-                checkOut: b.checkOut,
-                reason: 'category-deleted',
-                categoryId: deleteTarget.id,
-                categoryLabel: deleteTarget.label,
-              },
-            });
-          } catch { /* ignore */ }
-        });
-        // Summary entry so the login-history reader sees the wipe as one
-        // event with every touched room number.
+      const catRoomNumbers = rooms
+        .filter((r) => r.category === deleteTarget.id)
+        .map((r) => r.number);
+      const catRoomSet = new Set(catRoomNumbers);
+      const affected = bookings.filter((b) => catRoomSet.has(b.roomNumber));
+
+      // STEP 1 (any role, only when bookings exist): wipe EVERY booking that
+      // ever lived in any room of this category — every status (ожидание,
+      // забронировано, проживает, выехал, обслуживание, грязный, убрано) —
+      // from local state AND from public.bookings. All indicators recompute
+      // from the same list, so every count drops immediately.
+      if (deleteStep === 1 && affected.length > 0) {
+        deleteBookingsBulk(affected.map((b) => b.id));
         try {
           logAudit({
-            actor: {
-              username: user?.username ?? 'superuser',
-              role: (user?.role ?? 'superuser') as never,
-              adminId: null,
-            },
+            actor,
             category: 'system',
             action: 'category.bookings_wiped',
             summary:
@@ -395,38 +382,85 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
             details: {
               categoryId: deleteTarget.id,
               categoryLabel: deleteTarget.label,
-              roomNumbers: Array.from(catRoomNumbers).sort((a, b) => a - b),
+              roomNumbers: [...catRoomNumbers].sort((a, b) => a - b),
               deletedBookingIds: affected.map((b) => b.id),
               deletedCount: affected.length,
             },
           });
         } catch { /* ignore */ }
-        // Advance to the second, "are you REALLY sure" prompt.
         setDeleteStep(2);
         return;
       }
-      // Second press (superuser) or the legacy single-step flow: delete the
-      // category. Also record the category removal itself.
+
+      // STEP 2: remove the category itself + scrub every leftover trace.
       removeCategory(deleteTarget.id);
+      setExtraPersons((prev) => {
+        const copy = { ...prev };
+        catRoomNumbers.forEach((n) => delete copy[n]);
+        return copy;
+      });
+      setPersonNames((prev) => {
+        const copy = { ...prev };
+        catRoomNumbers.forEach((n) => delete copy[n]);
+        return copy;
+      });
+      setDeletedPersonSlots((prev) => {
+        const copy = { ...prev };
+        catRoomNumbers.forEach((n) => delete copy[n]);
+        return copy;
+      });
       try {
         logAudit({
-          actor: {
-            username: user?.username ?? 'superuser',
-            role: (user?.role ?? 'superuser') as never,
-            adminId: null,
-          },
+          actor,
           category: 'system',
           action: 'category.deleted',
           summary:
-            (lang === 'ru'
+            lang === 'ru'
               ? `Категория удалена: ${deleteTarget.label}`
-              : `Category deleted: ${deleteTarget.label}`),
+              : `Category deleted: ${deleteTarget.label}`,
           details: { categoryId: deleteTarget.id, categoryLabel: deleteTarget.label },
         });
       } catch { /* ignore */ }
       toast.success(lang === 'ru' ? `Категория удалена: ${deleteTarget.label}` : `Category deleted: ${deleteTarget.label}`);
     } else if (deleteTarget.type === 'room') {
+      // Room delete: first wipe EVERY booking of this room (all statuses)
+      // from state + Supabase, then remove the room and scrub leftovers.
+      const affected = bookings.filter((b) => b.roomNumber === deleteTarget.roomNumber);
+      if (affected.length > 0) {
+        deleteBookingsBulk(affected.map((b) => b.id));
+      }
       removeRoom(deleteTarget.roomNumber);
+      setExtraPersons((prev) => {
+        const copy = { ...prev };
+        delete copy[deleteTarget.roomNumber];
+        return copy;
+      });
+      setPersonNames((prev) => {
+        const copy = { ...prev };
+        delete copy[deleteTarget.roomNumber];
+        return copy;
+      });
+      setDeletedPersonSlots((prev) => {
+        const copy = { ...prev };
+        delete copy[deleteTarget.roomNumber];
+        return copy;
+      });
+      try {
+        logAudit({
+          actor,
+          category: 'system',
+          action: 'room.deleted',
+          summary:
+            lang === 'ru'
+              ? `Номер ${deleteTarget.roomNumber} удалён · бронирований стёрто: ${affected.length}`
+              : `Room ${deleteTarget.roomNumber} deleted · bookings wiped: ${affected.length}`,
+          details: {
+            roomNumber: deleteTarget.roomNumber,
+            deletedBookingIds: affected.map((b) => b.id),
+            deletedCount: affected.length,
+          },
+        });
+      } catch { /* ignore */ }
       toast.success(lang === 'ru' ? `Номер ${deleteTarget.roomNumber} удалён` : `Room ${deleteTarget.roomNumber} deleted`);
     } else if (deleteTarget.isExtra) {
       removeExtraPerson(deleteTarget.roomNumber, deleteTarget.personIdx);
@@ -446,7 +480,7 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
     }
     setDeleteTarget(null);
     setDeleteStep(1);
-  }, [deleteTarget, deleteStep, isSuperuser, bookings, rooms, onDeleteBooking, logAudit, user, lang, removeCategory, removeRoom, removeExtraPerson]);
+  }, [deleteTarget, deleteStep, bookings, rooms, deleteBookingsBulk, logAudit, user, lang, removeCategory, removeRoom, removeExtraPerson, setExtraPersons]);
 
   const openRateEditor = useCallback((categoryId: string) => {
     setRateEditCategoryId(categoryId);
@@ -2488,7 +2522,7 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
                 // Superuser + category delete uses a two-step confirmation.
                 // Everything else keeps the original single prompt.
                 const isCatSuperuser =
-                  isSuperuser && deleteTarget?.type === 'category';
+                  deleteTarget?.type === 'category';
                 if (isCatSuperuser && deleteTarget?.type === 'category') {
                   const catRoomNumbers = rooms
                     .filter((r) => r.category === deleteTarget.id)
@@ -2527,6 +2561,29 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
                     </>
                   );
                 }
+      if (deleteTarget?.type === 'room') {
+                  const roomBookings = bookings.filter(
+                    (b) => b.roomNumber === deleteTarget.roomNumber,
+                  ).length;
+                  return (
+                    <>
+                      <AlertDialogTitle className="font-display text-xl font-black">
+                        {lang === 'ru'
+                          ? `Удалить номер ${deleteTarget.roomNumber}?`
+                          : `Delete room ${deleteTarget.roomNumber}?`}
+                      </AlertDialogTitle>
+                      <AlertDialogDescription className="text-sm font-medium leading-relaxed">
+                        {roomBookings > 0
+                          ? lang === 'ru'
+                            ? `В номере ${deleteTarget.roomNumber} ${roomBookings === 1 ? 'есть 1 бронирование' : `есть ${roomBookings} бронирований`} (все статусы). Если продолжить, ${roomBookings === 1 ? 'оно будет' : 'все они будут'} удалены из базы без возможности восстановления, а сам номер исчезнет из сетки навсегда.`
+                            : `Room ${deleteTarget.roomNumber} has ${roomBookings === 1 ? '1 booking' : `${roomBookings} bookings`} (all statuses). If you continue, ${roomBookings === 1 ? 'it will' : 'they will all'} be permanently deleted from the database and the room will disappear from the grid for good.`
+                          : lang === 'ru'
+                            ? `Номер ${deleteTarget.roomNumber} будет удалён из сетки навсегда. Это действие нельзя отменить.`
+                            : `Room ${deleteTarget.roomNumber} will be removed from the grid for good. This action cannot be undone.`}
+                      </AlertDialogDescription>
+                    </>
+                  );
+                }
                 return (
                   <>
                     <AlertDialogTitle className="font-display text-xl font-black">
@@ -2553,8 +2610,7 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
                   // Keep the dialog open when the superuser is on step 1 of
                   // the category-delete flow — the wipe runs, then the
                   // second warning shows in the same modal.
-                  if (
-                    isSuperuser &&
+   if (
                     deleteTarget?.type === 'category' &&
                     deleteStep === 1
                   ) {
@@ -2564,9 +2620,10 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
                 }}
                 className="rounded-xl bg-destructive font-black text-destructive-foreground shadow-lg shadow-destructive/25 hover:bg-destructive/90"
               >
-                {isSuperuser && deleteTarget?.type === 'category' && deleteStep === 1
+     {deleteTarget?.type === 'category' && deleteStep === 1
                   ? (lang === 'ru' ? 'Удалить бронирования' : 'Delete bookings')
                   : t('delete')}
+
               </AlertDialogAction>
             </AlertDialogFooter>
           </div>

@@ -32,7 +32,7 @@ export function HotelDashboardBody({
   const { pathname, search } = useLocation();
   const navigate = useNavigate();
   const isAdminRoute = pathname.startsWith("/admin");
-  const { bookings, addBooking, removeBooking, updateBooking } = useBookingsContext();
+ const { bookings, addBooking, removeBooking, removeBookings, updateBooking } = useBookingsContext();
   const { rooms } = useHotelGrid();
   const [internalViewMode, setInternalViewMode] = useState<"tiles" | "timeline">("timeline");
   const viewMode = controlledViewMode ?? internalViewMode;
@@ -238,7 +238,8 @@ export function HotelDashboardBody({
             bookings={filteredBookings}
             conflictBookings={bookings}
             onAddBooking={handleAddBooking}
-            onDeleteBooking={removeBooking}
+     onDeleteBooking={removeBooking}
+            onDeleteBookings={removeBookings}
             onUpdateBooking={handleUpdateBooking}
             focusBookingId={focusBookingId}
             onFocusConsumed={handleFocusConsumed}
