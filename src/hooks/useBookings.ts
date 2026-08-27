@@ -163,7 +163,7 @@ export function useBookings() {
     return true;
   }, [applyLocal, persistBooking, reload, t]);
 
- const removeBooking = useCallback((id: string) => {
+  const removeBooking = useCallback((id: string) => {
     applyLocal(listRef.current.filter((b) => b.id !== id));
     void (async () => {
       const { error } = await supabase.from('bookings').delete().eq('booking_uid', id);
@@ -174,91 +174,79 @@ export function useBookings() {
     })();
   }, [applyLocal, reload]);
 
-const removeBookings = useCallback(
-  (ids: string[]) => {
-    if (!ids || ids.length === 0) return;
-    const idSet = new Set(ids);
-    applyLocal(listRef.current.filter((booking) => !idSet.has(booking.id)));
-
-    void (async () => {
-      const { error } = await supabase
-        .from('bookings')
-        .delete()
-        .in('booking_uid', ids);
-      if (error) {
-        console.error('[bookings] bulk delete', error);
-        toast.error('Booking deletion failed — reloading');
-        void reload();
-      }
-    })();
-  },
-  [applyLocal, reload],
-);
-
-/**
- * HARD WIPE BY ROOM NUMBER.
- * Deletes EVERY booking that belongs to the given room numbers — every status
- * (ожидание, забронировано, проживает, выехал, обслуживание, грязный, убрано),
- * past or future, visible or filtered out, even rows the client never loaded.
- * Matches both `room_current` (int) and `room_number` (text, incl. "101(3d) -- 204(3d)").
- */
-const purgeRooms = useCallback(
-  (roomNumbers: number[]) => {
-    const nums = Array.from(
-      new Set((roomNumbers ?? []).map((n) => Number(n)).filter((n) => Number.isFinite(n))),
-    );
-    if (nums.length === 0) return;
-    const numSet = new Set(nums);
-
-    // 1) optimistic local wipe → every indicator drops instantly
-    applyLocal(listRef.current.filter((b) => !numSet.has(Number(b.roomNumber))));
-
-    // 2) server-side hard delete (no soft flag, row is gone forever)
-    void (async () => {
-      const { error: e1 } = await supabase
-        .from('bookings')
-        .delete()
-        .in('room_current', nums);
-      if (e1) console.error('[bookings] purge by room_current', e1);
-
-      const { error: e2 } = await supabase
-        .from('bookings')
-        .delete()
-        .in('room_number', nums.map(String));
-      if (e2) console.error('[bookings] purge by room_number', e2);
-
-      // multi-segment rows like "101(3d) -- 204(3d)"
-      for (const n of nums) {
-        const { error: e3 } = await supabase
+  const removeBookings = useCallback(
+    (ids: string[]) => {
+      if (!ids || ids.length === 0) return;
+      const idSet = new Set(ids);
+      applyLocal(listRef.current.filter((booking) => !idSet.has(booking.id)));
+      void (async () => {
+        const { error } = await supabase
           .from('bookings')
           .delete()
-          .like('room_number', `%${n}%`);
-        if (e3) console.error('[bookings] purge by room_number like', e3);
-      }
+          .in('booking_uid', ids);
+        if (error) {
+          console.error('[bookings] bulk delete', error);
+          toast.error('Booking deletion failed — reloading');
+          void reload();
+        }
+      })();
+    },
+    [applyLocal, reload],
+  );
 
-      if (e1 || e2) void reload();
-    })();
-  },
-  [applyLocal, reload],
-);
+  /**
+   * HARD WIPE BY ROOM NUMBER.
+   * Deletes EVERY booking that belongs to the given room numbers — every status
+   * (ожидание, забронировано, проживает, выехал, обслуживание, грязный, убрано),
+   * past or future, visible or filtered out, even rows the client never loaded.
+   * Matches both `room_current` (int) and `room_number` (text, incl. "101(3d) -- 204(3d)").
+   */
+  const purgeRooms = useCallback(
+    (roomNumbers: number[]) => {
+      const nums = Array.from(
+        new Set((roomNumbers ?? []).map((n) => Number(n)).filter((n) => Number.isFinite(n))),
+      );
+      if (nums.length === 0) return;
+      const numSet = new Set(nums);
 
-return {
-  bookings,
-  addBooking,
-  removeBooking,
-  removeBookings,
-  purgeRooms,
-  updateBooking,
-};
-}
+      // 1) Optimistic local wipe → every indicator drops instantly
+      applyLocal(listRef.current.filter((b) => !numSet.has(Number(b.roomNumber))));
 
+      // 2) Server-side hard delete
+      void (async () => {
+        const { error: e1 } = await supabase
+          .from('bookings')
+          .delete()
+          .in('room_current', nums);
+        if (e1) console.error('[bookings] purge by room_current', e1);
 
+        const { error: e2 } = await supabase
+          .from('bookings')
+          .delete()
+          .in('room_number', nums.map(String));
+        if (e2) console.error('[bookings] purge by room_number', e2);
+
+        // Multi-segment rows like "101(3d) -- 204(3d)"
+        for (const n of nums) {
+          const { error: e3 } = await supabase
+            .from('bookings')
+            .delete()
+            .like('room_number', `%${n}%`);
+          if (e3) console.error('[bookings] purge by room_number like', e3);
+        }
+
+        if (e1 || e2) void reload();
+      })();
+    },
+    [applyLocal, reload],
+  );
 
   return {
     bookings,
     addBooking,
     removeBooking,
     removeBookings,
+    purgeRooms,
     updateBooking,
   };
 }

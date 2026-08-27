@@ -1,8 +1,8 @@
-import React, { createContext, useCallback, useContext, useMemo } from 'react';
-import { useBookings as useBookingsHook } from './useBookings';
-import type { Booking } from '@/types/hotel';
-import { useAudit } from '@/contexts/AuditContext';
-import { useAuth } from '@/contexts/AuthContext';
+import React, { createContext, useContext, useMemo, useCallback } from 'react';
+import { Booking } from '@/types/hotel';
+import { useBookings } from './useBookings';
+import { useAuditLog } from './useAuditLog';
+import { useAuth } from './useAuth';
 
 type Ctx = {
   bookings: Booking[];
@@ -13,33 +13,13 @@ type Ctx = {
   updateBooking: (id: string, updates: Partial<Booking>) => boolean;
 };
 
-
 const BookingsContext = createContext<Ctx | null>(null);
 
-function describeChange(prev: Booking, updates: Partial<Booking>): string {
-  const keys = Object.keys(updates) as (keyof Booking)[];
-  const parts: string[] = [];
-  for (const k of keys) {
-    const before = prev[k];
-    const after = updates[k];
-    if (before === after) continue;
-    parts.push(`${String(k)}: "${String(before ?? '')}" → "${String(after ?? '')}"`);
-  }
-  return parts.length ? parts.join(', ') : 'no field changes';
-}
-
-export function BookingsProvider({ children }: { children: React.ReactNode }) {
-  const inner = useBookingsHook();
-  const { log } = useAudit();
+export const BookingsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const inner = useBookings();
+  const { log } = useAuditLog();
   const { user } = useAuth();
-
-  const actor = useMemo(
-    () =>
-      user
-        ? { username: user.username, role: user.role, adminId: user.adminId ?? null }
-        : { username: 'anonymous', role: 'admin' as const, adminId: null },
-    [user],
-  );
+  const actor = user?.email || user?.name || 'system';
 
   const addBooking = useCallback(
     (b: Booking) => {
@@ -49,16 +29,8 @@ export function BookingsProvider({ children }: { children: React.ReactNode }) {
           actor,
           category: 'booking',
           action: 'booking.created',
-          summary: `Created booking for room ${b.roomNumber}${b.guestName ? ` (${b.guestName})` : ''}`,
-          details: {
-            bookingId: b.id,
-            room: b.roomNumber,
-            bedIndex: b.bedIndex,
-            checkIn: b.checkIn,
-            checkOut: b.checkOut,
-            status: b.status,
-            guestName: b.guestName,
-          },
+          summary: `Created booking for room ${b.roomNumber} (${b.guestName || 'Guest'})`,
+          details: { bookingId: b.id, roomNumber: b.roomNumber, status: b.status },
         });
       }
       return ok;
@@ -70,63 +42,32 @@ export function BookingsProvider({ children }: { children: React.ReactNode }) {
     (id: string) => {
       const target = inner.bookings.find((b) => b.id === id);
       inner.removeBooking(id);
-      log({
-        actor,
-        category: 'booking',
-        action: 'booking.deleted',
-        summary: target
-          ? `Deleted booking #${target.roomNumber}${target.guestName ? ` (${target.guestName})` : ''}`
-          : `Deleted booking ${id}`,
-        details: target ? { ...target } : { id },
-      });
-    },
-    [inner, log, actor],
-  );
-  const removeBookings = useCallback(
-    (ids: string[]) => {
-      if (!ids || ids.length === 0) return;
-      const targets = inner.bookings.filter((b) => ids.includes(b.id));
-      inner.removeBookings(ids);
-      // One audit entry per wiped booking (traceable in history)…
-      targets.forEach((b) => {
+      if (target) {
         log({
           actor,
           category: 'booking',
           action: 'booking.deleted',
-          summary: `Deleted booking #${b.roomNumber}${b.guestName ? ` (${b.guestName})` : ''}`,
-          details: { ...b },
+          summary: `Deleted booking ${id} (room ${target.roomNumber})`,
+          details: { bookingId: id, roomNumber: target.roomNumber },
         });
-      });
-      // …plus one summary entry for the whole wipe.
-      log({
-        actor,
-        category: 'system',
-        action: 'bookings.wiped',
-        summary: `Wiped ${targets.length} booking(s) (category/room deletion)`,
-        details: {
-          deletedCount: targets.length,
-          deletedBookingIds: targets.map((b) => b.id),
-          rooms: Array.from(new Set(targets.map((b) => b.roomNumber))).sort((a, b) => a - b),
-        },
-      });
+      }
     },
     [inner, log, actor],
   );
 
-  const updateBooking = useCallback(
-    (id: string, updates: Partial<Booking>) => {
-      const before = inner.bookings.find((b) => b.id === id);
-      const ok = inner.updateBooking(id, updates);
-      if (ok && before) {
-        log({
-          actor,
-          category: 'booking',
-          action: 'booking.updated',
-          summary: `Updated booking #${before.roomNumber} — ${describeChange(before, updates)}`,
-          details: { bookingId: id, before, patch: updates },
-        });
-      }
-      return ok;
+  const removeBookings = useCallback(
+    (ids: string[]) => {
+      if (!ids || ids.length === 0) return;
+      const idSet = new Set(ids);
+      const targets = inner.bookings.filter((b) => idSet.has(b.id));
+      inner.removeBookings(ids);
+      log({
+        actor,
+        category: 'booking',
+        action: 'bookings.bulk_deleted',
+        summary: `Bulk deleted ${targets.length} booking(s)`,
+        details: { deletedIds: ids, count: targets.length },
+      });
     },
     [inner, log, actor],
   );
@@ -153,26 +94,42 @@ export function BookingsProvider({ children }: { children: React.ReactNode }) {
     [inner, log, actor],
   );
 
+  const updateBooking = useCallback(
+    (id: string, updates: Partial<Booking>) => {
+      const ok = inner.updateBooking(id, updates);
+      if (ok) {
+        log({
+          actor,
+          category: 'booking',
+          action: 'booking.updated',
+          summary: `Updated booking ${id}`,
+          details: { bookingId: id, updates },
+        });
+      }
+      return ok;
+    },
+    [inner, log, actor],
+  );
 
-const value = useMemo<Ctx>(
-  () => ({
-    bookings: inner.bookings,
-    addBooking,
-    removeBooking,
-    removeBookings,
-    purgeRooms,
-    updateBooking,
-  }),
-  [inner.bookings, addBooking, removeBooking, removeBookings, purgeRooms, updateBooking],
-);
-
-
+  const value = useMemo<Ctx>(
+    () => ({
+      bookings: inner.bookings,
+      addBooking,
+      removeBooking,
+      removeBookings,
+      purgeRooms,
+      updateBooking,
+    }),
+    [inner.bookings, addBooking, removeBooking, removeBookings, purgeRooms, updateBooking],
+  );
 
   return <BookingsContext.Provider value={value}>{children}</BookingsContext.Provider>;
-}
+};
 
-export function useBookingsContext() {
+export const useBookingsContext = () => {
   const ctx = useContext(BookingsContext);
-  if (!ctx) throw new Error('useBookingsContext must be used inside BookingsProvider');
+  if (!ctx) {
+    throw new Error('useBookingsContext must be used within a BookingsProvider');
+  }
   return ctx;
-}
+};
