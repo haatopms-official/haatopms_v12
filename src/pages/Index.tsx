@@ -33,14 +33,49 @@ export function HotelDashboardBody({
   const navigate = useNavigate();
   const isAdminRoute = pathname.startsWith("/admin");
   const {
-    bookings,
+    bookings: rawBookings,
     addBooking,
     removeBooking,
     removeBookings,
+    purgeRooms,
     updateBooking,
   } = useBookingsContext();
 
-  const { rooms } = useHotelGrid();
+
+const { rooms } = useHotelGrid();
+
+  // Set of room numbers that still exist in the grid.
+  const existingRoomNumbers = useMemo(
+    () => new Set(rooms.map((r) => Number(r.number))),
+    [rooms],
+  );
+
+  /**
+   * The ONLY list the whole dashboard is allowed to see. A booking whose room
+   * (or whose whole category) was deleted is not part of the hotel anymore, so
+   * it must not appear in any grid, tile, chip or summary card.
+   */
+  const bookings = useMemo(
+    () => rawBookings.filter((b) => existingRoomNumbers.has(Number(b.roomNumber))),
+    [rawBookings, existingRoomNumbers],
+  );
+
+  /**
+   * SELF-HEALING SWEEP: any booking left over from a room/category that no
+   * longer exists gets hard-deleted from Supabase, so it can never come back
+   * and can never interfere again. Runs once the grid has hydrated.
+   */
+  const sweptRef = useRef<string>('');
+  useEffect(() => {
+    if (rooms.length === 0) return;                 // grid not hydrated yet
+    const orphans = rawBookings.filter((b) => !existingRoomNumbers.has(Number(b.roomNumber)));
+    if (orphans.length === 0) return;
+    const key = orphans.map((b) => b.id).sort().join('|');
+    if (sweptRef.current === key) return;           // don't loop
+    sweptRef.current = key;
+    removeBookings(orphans.map((b) => b.id));
+  }, [rawBookings, rooms, existingRoomNumbers, removeBookings]);
+
   const [internalViewMode, setInternalViewMode] = useState<"tiles" | "timeline">("timeline");
   const viewMode = controlledViewMode ?? internalViewMode;
   const setViewMode = useCallback(
@@ -199,11 +234,15 @@ export function HotelDashboardBody({
     const pending = counts.pending || 0;
     const maintenance = counts.maintenance || 0;
     const checkedOut = counts["checked-out"] || 0;
-    const occupied = inHouse + booked + confirmed + pending + maintenance;
+    const occupiedRooms = new Set(
+      bookings
+        .filter((b) => ["in-house", "booked", "confirmed", "pending", "maintenance"].includes(b.status))
+        .map((b) => Number(b.roomNumber)),
+    ).size;
 
     return {
       total: rooms.length,
-      available: Math.max(0, rooms.length - occupied),
+      available: Math.max(0, rooms.length - occupiedRooms),
       confirmed,
       pending,
       booked,
@@ -211,7 +250,8 @@ export function HotelDashboardBody({
       checkedOut,
       maintenance,
     };
-  }, [counts, rooms]);
+  }, [counts, rooms, bookings]);
+
 
   const filteredBookings = useMemo(() => {
     if (statusFilter === "all") return bookings;
@@ -223,7 +263,7 @@ export function HotelDashboardBody({
       {showNavbar && (
         <HotelNavbar totalRooms={rooms.length} viewMode={viewMode} onViewModeChange={setViewMode} />
       )}
-      <HotelSummaryCards {...summary} activeFilter={statusFilter} onSelect={handleSummarySelect} />
+<HotelSummaryCards {...summary} activeFilter={statusFilter} onSelect={handleSummarySelect} />
       <div className="px-4">
         <HotelStatusFilter activeFilter={statusFilter} onFilterChange={setStatusFilter} counts={counts} />
       </div>
@@ -235,10 +275,12 @@ export function HotelDashboardBody({
             onAddBooking={handleAddBooking}
             onDeleteBooking={removeBooking}
             onDeleteBookings={removeBookings}
+            onPurgeRooms={purgeRooms}
             onUpdateBooking={handleUpdateBooking}
             focusBookingId={focusBookingId}
             onFocusConsumed={handleFocusConsumed}
             labelWidth={isAdminRoute ? 320 : undefined}
+            
           />
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto">

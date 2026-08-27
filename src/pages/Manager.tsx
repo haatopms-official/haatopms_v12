@@ -144,8 +144,13 @@ export default function Manager() {
   const [view, setView] = useState<ManagerView>("workspace");
   const [range, setRange] = useState<RangeKey>("14d");
   const [workspaceViewMode, setWorkspaceViewMode] = useState<"tiles" | "timeline">("timeline");
-  const { bookings, addBooking, removeBooking, updateBooking } = useBookingsContext();
+  const { bookings: rawBookings, addBooking, removeBooking, updateBooking } = useBookingsContext();
   const { categories, rooms, categoryRates } = useHotelGrid();
+
+  const bookings = useMemo(() => {
+    const live = new Set(rooms.map((r) => Number(r.number)));
+    return rawBookings.filter((b) => live.has(Number(b.roomNumber)));
+  }, [rawBookings, rooms]);
 
   useEffect(() => {
     const handler = (e: Event) => {

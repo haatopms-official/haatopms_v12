@@ -9,8 +9,10 @@ type Ctx = {
   addBooking: (b: Booking) => boolean;
   removeBooking: (id: string) => void;
   removeBookings: (ids: string[]) => void;
+  purgeRooms: (roomNumbers: number[]) => void;
   updateBooking: (id: string, updates: Partial<Booking>) => boolean;
 };
+
 
 const BookingsContext = createContext<Ctx | null>(null);
 
@@ -129,22 +131,41 @@ export function BookingsProvider({ children }: { children: React.ReactNode }) {
     [inner, log, actor],
   );
 
+  const purgeRooms = useCallback(
+    (roomNumbers: number[]) => {
+      if (!roomNumbers || roomNumbers.length === 0) return;
+      const numSet = new Set(roomNumbers.map(Number));
+      const targets = inner.bookings.filter((b) => numSet.has(Number(b.roomNumber)));
+      inner.purgeRooms(roomNumbers);
+      log({
+        actor,
+        category: 'system',
+        action: 'bookings.purged_by_room',
+        summary: `Hard-wiped ${targets.length} booking(s) from room(s) ${roomNumbers.join(', ')}`,
+        details: {
+          roomNumbers,
+          deletedCount: targets.length,
+          deletedBookingIds: targets.map((b) => b.id),
+          statuses: targets.map((b) => b.status),
+        },
+      });
+    },
+    [inner, log, actor],
+  );
+
+
 const value = useMemo<Ctx>(
   () => ({
     bookings: inner.bookings,
     addBooking,
     removeBooking,
     removeBookings,
+    purgeRooms,
     updateBooking,
   }),
-  [
-    inner.bookings,
-    addBooking,
-    removeBooking,
-    removeBookings,
-    updateBooking,
-  ],
+  [inner.bookings, addBooking, removeBooking, removeBookings, purgeRooms, updateBooking],
 );
+
 
 
   return <BookingsContext.Provider value={value}>{children}</BookingsContext.Provider>;
