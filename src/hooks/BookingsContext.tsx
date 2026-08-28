@@ -3,6 +3,8 @@ import { Booking } from '@/types/hotel';
 import { useBookings } from './useBookings';
 import { useAudit } from '@/contexts/AuditContext';
 import { useAuth } from '@/contexts/AuthContext';
+import type { UserRole } from '@/contexts/AuthContext';
+
 
 type Ctx = {
   bookings: Booking[];
@@ -18,9 +20,16 @@ const BookingsContext = createContext<Ctx | null>(null);
 
 export const BookingsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const inner = useBookings();
-const { log } = useAudit();
+  const { log } = useAudit();
   const { user } = useAuth();
-const actor = { username: user?.email || user?.name || 'system', role: (user?.role ?? 'admin') as UserRole };
+  const actor = useMemo(
+    () => ({
+      username: user?.email || user?.name || 'system',
+      role: (user?.role ?? 'admin') as UserRole,
+    }),
+    [user?.email, user?.name, user?.role],
+  );
+
 
 
   const addBooking = useCallback(

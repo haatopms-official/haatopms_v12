@@ -6,6 +6,7 @@ import { Booking } from '@/types/hotel';
 import { supabase } from '@/integrations/supabase/client';
 import { bookingToRow, guestArgs, rowToBooking } from '@/lib/sheetMapper';
 import { useI18n } from './useI18n';
+import { error } from 'console';
 
 /* ---------------- overlap detection (unchanged logic) ---------------- */
 function bookingHalfSpan(b: Booking): [number, number] {
@@ -257,15 +258,14 @@ export function useBookings() {
     [purgeTarget],
   );
 
-return {
+  return {
     bookings,
-    selectedBooking,
-    setSelectedBooking,
-    isLoading,
-    error,
+    reload,
     addBooking,
     updateBooking,
-    deleteBooking,
+    removeBooking,
+    removeBookings,
+    purgeRooms,
     purgeTarget,
   };
-} // <-- Ensure this closing curly brace for the useBookings function is present
+}
