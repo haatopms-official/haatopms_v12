@@ -259,10 +259,13 @@ export function useBookings() {
 
 return {
     bookings,
+    selectedBooking,
+    setSelectedBooking,
+    isLoading,
+    error,
     addBooking,
-    removeBooking,
-    removeBookings,
-    purgeRooms,
-    purgeTarget, // <--- Add this property
     updateBooking,
+    deleteBooking,
+    purgeTarget,
   };
+} // <-- Ensure this closing curly brace for the useBookings function is present
