@@ -10,6 +10,7 @@ type Ctx = {
   removeBooking: (id: string) => void;
   removeBookings: (ids: string[]) => void;
   purgeRooms: (roomNumbers: number[]) => void;
+  purgeTarget: (target: { rooms?: number[]; categoryId?: string | null }) => void;
   updateBooking: (id: string, updates: Partial<Booking>) => boolean;
 };
 
@@ -94,6 +95,40 @@ export const BookingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     [inner, log, actor],
   );
 
+  const purgeTarget = useCallback(
+    (target: { rooms?: number[]; categoryId?: string | null }) => {
+      const nums = Array.from(
+        new Set((target.rooms ?? []).map((n) => Number(n)).filter((n) => Number.isFinite(n))),
+      );
+      const catId = (target.categoryId ?? '').trim() || null;
+      if (nums.length === 0 && !catId) return;
+
+      const numSet = new Set(nums);
+      const targets = inner.bookings.filter(
+        (b) =>
+          numSet.has(Number(b.roomNumber)) ||
+          (catId !== null && String((b as unknown as { categoryId?: string }).categoryId ?? '') === catId),
+      );
+
+      inner.purgeTarget({ rooms: nums, categoryId: catId });
+
+      log({
+        actor,
+        category: 'system',
+        action: 'bookings.purged_hard',
+        summary: `Hard-wiped ${targets.length} booking(s) · rooms [${nums.join(', ') || '—'}] · category ${catId ?? '—'}`,
+        details: {
+          roomNumbers: nums,
+          categoryId: catId,
+          deletedCount: targets.length,
+          deletedBookingIds: targets.map((b) => b.id),
+          statuses: targets.map((b) => b.status),
+        },
+      });
+    },
+    [inner, log, actor],
+  );
+
   const updateBooking = useCallback(
     (id: string, updates: Partial<Booking>) => {
       const ok = inner.updateBooking(id, updates);
@@ -118,9 +153,10 @@ export const BookingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       removeBooking,
       removeBookings,
       purgeRooms,
+      purgeTarget,
       updateBooking,
     }),
-    [inner.bookings, addBooking, removeBooking, removeBookings, purgeRooms, updateBooking],
+    [inner.bookings, addBooking, removeBooking, removeBookings, purgeRooms, purgeTarget, updateBooking],
   );
 
   return <BookingsContext.Provider value={value}>{children}</BookingsContext.Provider>;

@@ -111,7 +111,6 @@ export function HotelGridProvider({ children }: { children: React.ReactNode }) {
 
   const { data, setData } = useSharedState<GridState>('grid', INITIAL);
 
-
   const removedCategoryIds = useMemo(() => new Set(data.removedCategoryIds ?? []), [data.removedCategoryIds]);
   const removedRoomNumbers = useMemo(() => new Set(data.removedRoomNumbers ?? []), [data.removedRoomNumbers]);
 
@@ -152,21 +151,27 @@ export function HotelGridProvider({ children }: { children: React.ReactNode }) {
     }));
   }, [setData]);
 
- const removeCategory = useCallback((id: string) => {
+  const removeCategory = useCallback((id: string) => {
+    // every room number that belongs to this category, base + custom
+    const doomedNumbers = [
+      ...baseRooms.filter((r) => r.category === id).map((r) => r.number),
+      ...((data.extraRooms ?? []).filter((r) => r.category === id).map((r) => r.number)),
+    ];
     setData((prev) => {
       const nextRates = { ...(prev.categoryRates ?? {}) };
       delete nextRates[id];
       return {
         ...prev,
         removedCategoryIds: Array.from(new Set([...(prev.removedCategoryIds ?? []), id])),
+        removedRoomNumbers: Array.from(new Set([...(prev.removedRoomNumbers ?? []), ...doomedNumbers])),
         extraCategories: (prev.extraCategories ?? []).filter((c) => c.id !== id),
         extraRooms: (prev.extraRooms ?? []).filter((r) => r.category !== id),
         categoryRates: nextRates,
       };
     });
-  }, [setData]);
+  }, [baseRooms, data.extraRooms, setData]);
 
-const addRoom = useCallback((categoryId: string, roomNumber: number) => {
+  const addRoom = useCallback((categoryId: string, roomNumber: number) => {
     if (!Number.isFinite(roomNumber) || roomNumber <= 0) return { ok: false, reason: 'invalid' as const };
     const baseNumbers = new Set(baseRooms.map((r) => r.number));
     const extraNumbers = new Set((data.extraRooms ?? []).map((r) => r.number));
@@ -200,7 +205,6 @@ const addRoom = useCallback((categoryId: string, roomNumber: number) => {
   const value: Ctx = { categories, rooms, categoryRates, addCategory, removeCategory, addRoom, removeRoom, setCategoryRate };
   return <HotelGridContext.Provider value={value}>{children}</HotelGridContext.Provider>;
 }
-
 
 export function useHotelGrid() {
   const ctx = useContext(HotelGridContext);

@@ -194,59 +194,75 @@ export function useBookings() {
     [applyLocal, reload],
   );
 
-  /**
-   * HARD WIPE BY ROOM NUMBER.
-   * Deletes EVERY booking that belongs to the given room numbers — every status
-   * (ожидание, забронировано, проживает, выехал, обслуживание, грязный, убрано),
-   * past or future, visible or filtered out, even rows the client never loaded.
-   * Matches both `room_current` (int) and `room_number` (text, incl. "101(3d) -- 204(3d)").
+   /**
+   * HARD PURGE of a delete target (a set of room numbers and/or a category id).
+   * Deletes EVERY booking that belongs to it — every status (ожидание,
+   * забронировано, проживает, выехал, обслуживание, грязный, убрано), past or
+   * future, visible or filtered out, even rows this client never loaded — from
+   * local state AND from public.bookings, and drops guests left with no stays.
    */
-  const purgeRooms = useCallback(
-    (roomNumbers: number[]) => {
+  const purgeTarget = useCallback(
+    (target: { rooms?: number[]; categoryId?: string | null }) => {
       const nums = Array.from(
-        new Set((roomNumbers ?? []).map((n) => Number(n)).filter((n) => Number.isFinite(n))),
+        new Set((target.rooms ?? []).map((n) => Number(n)).filter((n) => Number.isFinite(n))),
       );
-      if (nums.length === 0) return;
+      const catId = (target.categoryId ?? '').trim() || null;
+      if (nums.length === 0 && !catId) return;
+
       const numSet = new Set(nums);
+      const hits = (b: Booking) =>
+        numSet.has(Number(b.roomNumber)) ||
+        (catId !== null && String((b as unknown as { categoryId?: string }).categoryId ?? '') === catId);
 
-      // 1) Optimistic local wipe → every indicator drops instantly
-      applyLocal(listRef.current.filter((b) => !numSet.has(Number(b.roomNumber))));
+      // 1) optimistic local wipe → every card and every chip drops instantly
+      const victims = listRef.current.filter(hits);
+      applyLocal(listRef.current.filter((b) => !hits(b)));
 
-      // 2) Server-side hard delete
+      // 2) atomic server-side hard delete
       void (async () => {
-        const { error: e1 } = await supabase
-          .from('bookings')
-          .delete()
-          .in('room_current', nums);
-        if (e1) console.error('[bookings] purge by room_current', e1);
+        const { error } = await supabase.rpc('purge_hotel_target', {
+          p_rooms: nums,
+          p_category: catId,
+        });
 
-        const { error: e2 } = await supabase
-          .from('bookings')
-          .delete()
-          .in('room_number', nums.map(String));
-        if (e2) console.error('[bookings] purge by room_number', e2);
-
-        // Multi-segment rows like "101(3d) -- 204(3d)"
-        for (const n of nums) {
-          const { error: e3 } = await supabase
-            .from('bookings')
-            .delete()
-            .like('room_number', `%${n}%`);
-          if (e3) console.error('[bookings] purge by room_number like', e3);
+        if (error) {
+          console.error('[bookings] purge_hotel_target', error);
+          // Fallback for a DB where the migration is not applied yet:
+          // exact deletes only — never a LIKE pattern.
+          if (nums.length) {
+            const { error: e1 } = await supabase.from('bookings').delete().in('room_current', nums);
+            if (e1) console.error('[bookings] purge by room_current', e1);
+          }
+          if (catId) {
+            const { error: e2 } = await supabase.from('bookings').delete().eq('category', catId);
+            if (e2) console.error('[bookings] purge by category', e2);
+          }
+          const ids = victims.map((b) => b.id);
+          if (ids.length) {
+            const { error: e3 } = await supabase.from('bookings').delete().in('booking_uid', ids);
+            if (e3) console.error('[bookings] purge by booking_uid', e3);
+          }
         }
 
-        if (e1 || e2) void reload();
+        // 3) always resync so nothing can silently survive
+        await reload();
       })();
     },
     [applyLocal, reload],
   );
 
-  return {
+  /** Back-compat wrapper — old call sites keep working. */
+  const purgeRooms = useCallback(
+    (roomNumbers: number[]) => purgeTarget({ rooms: roomNumbers }),
+    [purgeTarget],
+  );
+
+return {
     bookings,
     addBooking,
     removeBooking,
     removeBookings,
     purgeRooms,
+    purgeTarget, // <--- Add this property
     updateBooking,
   };
-}

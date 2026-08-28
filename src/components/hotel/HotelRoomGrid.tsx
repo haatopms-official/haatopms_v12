@@ -41,6 +41,7 @@ interface RoomGridProps {
   onDeleteBookings?: (ids: string[]) => void;
   /** Hard-wipe every booking of the given room numbers, directly in the database. */
   onPurgeRooms?: (roomNumbers: number[]) => void;
+    onPurgeTarget?: (target: { rooms?: number[]; categoryId?: string | null }) => void;
   onUpdateBooking: (id: string, updates: Partial<Booking>) => void;
   /** When set, the grid will scroll to that booking and play a 5s glow. */
   focusBookingId?: string | null;
@@ -264,7 +265,7 @@ function bucketBookings(
   return { byRoom, byBed };
 }
 
-export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBooking, onDeleteBooking, onDeleteBookings, onPurgeRooms, onUpdateBooking, focusBookingId, onFocusConsumed, labelWidth }: RoomGridProps) {
+export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBooking, onDeleteBooking, onDeleteBookings, onPurgeRooms, onPurgeTarget, onUpdateBooking, focusBookingId, onFocusConsumed, labelWidth }: RoomGridProps) {
 
   const LABEL_WIDTH = labelWidth ?? DEFAULT_LABEL_WIDTH;
   const { t, lang } = useI18n();
@@ -357,16 +358,37 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
     [onDeleteBookings, onDeleteBooking],
   );
 
-  // Database-level wipe by room number (catches orphans + rows not loaded).
-  const purgeRoomsHard = useCallback(
-    (roomNumbers: number[]) => {
-      if (!roomNumbers.length) return;
-      if (onPurgeRooms) onPurgeRooms(roomNumbers);
-      const numSet = new Set(roomNumbers.map(Number));
-      const ids = allBookings.filter((b) => numSet.has(Number(b.roomNumber))).map((b) => b.id);
-      if (!onPurgeRooms && ids.length) deleteBookingsBulk(ids);
+  // Database-level hard wipe by room numbers AND/OR category id.
+  // Catches orphans, rows of already-removed rooms, and rows this client
+  // never loaded. Every status is included.
+  const purgeHard = useCallback(
+    (target: { rooms?: number[]; categoryId?: string | null }) => {
+      const nums = Array.from(
+        new Set((target.rooms ?? []).map(Number).filter((n) => Number.isFinite(n))),
+      );
+      const catId = (target.categoryId ?? '').trim() || null;
+      if (nums.length === 0 && !catId) return;
+
+      if (onPurgeTarget) {
+        onPurgeTarget({ rooms: nums, categoryId: catId });
+        return;
+      }
+      if (onPurgeRooms && nums.length) {
+        onPurgeRooms(nums);
+        return;
+      }
+      // last-resort fallback: delete the ids we can see
+      const numSet = new Set(nums);
+      const ids = allBookings
+        .filter(
+          (b) =>
+            numSet.has(Number(b.roomNumber)) ||
+            (catId !== null && String((b as unknown as { categoryId?: string }).categoryId ?? '') === catId),
+        )
+        .map((b) => b.id);
+      if (ids.length) deleteBookingsBulk(ids);
     },
-    [onPurgeRooms, allBookings, deleteBookingsBulk],
+    [onPurgeTarget, onPurgeRooms, allBookings, deleteBookingsBulk],
   );
 
 
@@ -392,7 +414,7 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
       // from local state AND from public.bookings. All indicators recompute
       // from the same list, so every count drops immediately.
       if (deleteStep === 1 && affected.length > 0) {
-        purgeRoomsHard(catRoomNumbers);
+        purgeHard({ rooms: catRoomNumbers, categoryId: deleteTarget.id });
 
         try {
           logAudit({
@@ -417,8 +439,11 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
         return;
       }
 
-      // STEP 2: remove the category itself + scrub every leftover trace.
-      removeCategory(deleteTarget.id);
+   // STEP 2: final wipe (catches anything added between the two warnings,
+      // and any booking whose room was already removed earlier), then remove
+      // the category itself + scrub every leftover trace.
+      purgeHard({ rooms: catRoomNumbers, categoryId: deleteTarget.id });
+      removeCategory(deleteTarget.id);  
       setExtraPersons((prev) => {
         const copy = { ...prev };
         catRoomNumbers.forEach((n) => delete copy[n]);
@@ -451,7 +476,7 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
       // Room delete: first wipe EVERY booking of this room (all statuses)
       // from state + Supabase, then remove the room and scrub leftovers.
       const affected = allBookings.filter((b) => b.roomNumber === deleteTarget.roomNumber);
-      purgeRoomsHard([deleteTarget.roomNumber]);
+      purgeHard({ rooms: [deleteTarget.roomNumber] });
       removeRoom(deleteTarget.roomNumber);
       setExtraPersons((prev) => {
         const copy = { ...prev };
@@ -503,7 +528,7 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
     }
     setDeleteTarget(null);
     setDeleteStep(1);
-  }, [deleteTarget, deleteStep, allBookings, rooms, deleteBookingsBulk, purgeRoomsHard, logAudit, user, lang, removeCategory, removeRoom, removeExtraPerson, setExtraPersons]);
+  }, [deleteTarget, deleteStep, allBookings, rooms, deleteBookingsBulk, purgeHard, logAudit, user, lang, removeCategory, removeRoom, removeExtraPerson, setExtraPersons]);
 
 
   const openRateEditor = useCallback((categoryId: string) => {

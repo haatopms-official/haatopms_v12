@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback, useEffect } from "react";
+import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { HotelNavbar } from "@/components/hotel/HotelNavbar";
 import { HotelSummaryCards, type SummaryFilter } from "@/components/hotel/HotelSummaryCards";
@@ -38,11 +38,16 @@ export function HotelDashboardBody({
     removeBooking,
     removeBookings,
     purgeRooms,
+    purgeTarget,
     updateBooking,
   } = useBookingsContext();
 
+  const { rooms, categories } = useHotelGrid();
 
-const { rooms } = useHotelGrid();
+  const existingCategoryIds = useMemo(
+    () => new Set(categories.map((c) => c.id)),
+    [categories],
+  );
 
   // Set of room numbers that still exist in the grid.
   const existingRoomNumbers = useMemo(
@@ -56,8 +61,14 @@ const { rooms } = useHotelGrid();
    * it must not appear in any grid, tile, chip or summary card.
    */
   const bookings = useMemo(
-    () => rawBookings.filter((b) => existingRoomNumbers.has(Number(b.roomNumber))),
-    [rawBookings, existingRoomNumbers],
+    () =>
+      rawBookings.filter((b) => {
+        if (!existingRoomNumbers.has(Number(b.roomNumber))) return false;
+        const catId = String((b as unknown as { categoryId?: string }).categoryId ?? '');
+        if (catId !== '' && !existingCategoryIds.has(catId)) return false;
+        return true;
+      }),
+    [rawBookings, existingRoomNumbers, existingCategoryIds],
   );
 
   /**
@@ -68,13 +79,18 @@ const { rooms } = useHotelGrid();
   const sweptRef = useRef<string>('');
   useEffect(() => {
     if (rooms.length === 0) return;                 // grid not hydrated yet
-    const orphans = rawBookings.filter((b) => !existingRoomNumbers.has(Number(b.roomNumber)));
+    const orphans = rawBookings.filter((b) => {
+      const roomGone = !existingRoomNumbers.has(Number(b.roomNumber));
+      const catId = String((b as unknown as { categoryId?: string }).categoryId ?? '');
+      const catGone = catId !== '' && !existingCategoryIds.has(catId);
+      return roomGone || catGone;
+    });
     if (orphans.length === 0) return;
     const key = orphans.map((b) => b.id).sort().join('|');
     if (sweptRef.current === key) return;           // don't loop
     sweptRef.current = key;
     removeBookings(orphans.map((b) => b.id));
-  }, [rawBookings, rooms, existingRoomNumbers, removeBookings]);
+  }, [rawBookings, rooms, existingRoomNumbers, existingCategoryIds, removeBookings]);
 
   const [internalViewMode, setInternalViewMode] = useState<"tiles" | "timeline">("timeline");
   const viewMode = controlledViewMode ?? internalViewMode;
@@ -240,7 +256,7 @@ const { rooms } = useHotelGrid();
         .map((b) => Number(b.roomNumber)),
     ).size;
 
-    return {
+  return {
       total: rooms.length,
       available: Math.max(0, rooms.length - occupiedRooms),
       confirmed,
@@ -252,7 +268,6 @@ const { rooms } = useHotelGrid();
     };
   }, [counts, rooms, bookings]);
 
-
   const filteredBookings = useMemo(() => {
     if (statusFilter === "all") return bookings;
     return bookings.filter((booking) => booking.status === statusFilter);
@@ -263,7 +278,7 @@ const { rooms } = useHotelGrid();
       {showNavbar && (
         <HotelNavbar totalRooms={rooms.length} viewMode={viewMode} onViewModeChange={setViewMode} />
       )}
-<HotelSummaryCards {...summary} activeFilter={statusFilter} onSelect={handleSummarySelect} />
+      <HotelSummaryCards {...summary} activeFilter={statusFilter} onSelect={handleSummarySelect} />
       <div className="px-4">
         <HotelStatusFilter activeFilter={statusFilter} onFilterChange={setStatusFilter} counts={counts} />
       </div>
@@ -276,11 +291,11 @@ const { rooms } = useHotelGrid();
             onDeleteBooking={removeBooking}
             onDeleteBookings={removeBookings}
             onPurgeRooms={purgeRooms}
+            onPurgeTarget={purgeTarget}
             onUpdateBooking={handleUpdateBooking}
             focusBookingId={focusBookingId}
             onFocusConsumed={handleFocusConsumed}
             labelWidth={isAdminRoute ? 320 : undefined}
-            
           />
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto">
