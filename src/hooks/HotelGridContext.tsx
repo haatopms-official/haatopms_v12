@@ -84,8 +84,9 @@ interface Ctx {
   categories: CategoryDef[];
   rooms: Room[];
   categoryRates: Record<string, CategoryRate>;
-  addCategory: (input: { name: string; short: string; maxGuests: number }) => void;
+  addCategory: (input: { name: string; short: string; maxGuests: number }) => string;
   removeCategory: (id: string) => void;
+  /** Never fails on "already exists" — any positive number can always be created. */
   addRoom: (categoryId: string, roomNumber: number) => { ok: boolean; reason?: 'exists' | 'invalid' };
   removeRoom: (roomNumber: number) => void;
   setCategoryRate: (categoryId: string, rate: CategoryRate) => void;
@@ -120,10 +121,22 @@ export function HotelGridProvider({ children }: { children: React.ReactNode }) {
   );
 
   const rooms = useMemo<Room[]>(() => {
-    const visibleBase = baseRooms.filter((r) => !removedRoomNumbers.has(r.number) && !removedCategoryIds.has(r.category));
-    const merged = [...visibleBase, ...(data.extraRooms ?? []).filter((r) => !removedCategoryIds.has(r.category))];
-    return merged.sort((a, b) => a.number - b.number);
-  }, [baseRooms, removedRoomNumbers, data.extraRooms, removedCategoryIds]);
+    const liveCategoryIds = new Set(
+      [...baseCategories, ...(data.extraCategories ?? [])]
+        .filter((c) => !removedCategoryIds.has(c.id))
+        .map((c) => c.id),
+    );
+    const byNumber = new Map<number, Room>();
+    // base rooms first…
+    baseRooms
+      .filter((r) => !removedRoomNumbers.has(r.number) && liveCategoryIds.has(r.category))
+      .forEach((r) => byNumber.set(r.number, r));
+    // …then explicit custom rooms, which always win for the same number
+    (data.extraRooms ?? [])
+      .filter((r) => liveCategoryIds.has(r.category))
+      .forEach((r) => byNumber.set(r.number, r));
+    return Array.from(byNumber.values()).sort((a, b) => a.number - b.number);
+  }, [baseRooms, baseCategories, data.extraCategories, data.extraRooms, removedRoomNumbers, removedCategoryIds]);
 
   const categoryRates = useMemo(() => {
     const knownMax = new Map<string, number>();
@@ -135,24 +148,28 @@ export function HotelGridProvider({ children }: { children: React.ReactNode }) {
   }, [baseCategories, data.extraCategories, data.categoryRates]);
 
   const addCategory = useCallback(({ name, short, maxGuests }: { name: string; short: string; maxGuests: number }) => {
-    const id = `custom-${Date.now()}`;
+    const id = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const cleanName = name.trim();
+    const cleanShort = (short || '').trim().toUpperCase() || cleanName.slice(0, 6).toUpperCase();
     setData((prev) => ({
       ...prev,
+      // if this id was ever "removed" (impossible for a fresh id, but keeps state clean)
+      removedCategoryIds: (prev.removedCategoryIds ?? []).filter((x) => x !== id),
       extraCategories: [
         ...(prev.extraCategories ?? []),
         {
           id,
           custom: true,
-          short: short.trim() || name.slice(0, 6).toUpperCase(),
+          short: cleanShort,
           maxGuests: Math.max(1, Math.floor(maxGuests || 1)),
-          label: { ru: name, uz: name, en: name },
+          label: { ru: cleanName, uz: cleanName, en: cleanName },
         },
       ],
     }));
+    return id;
   }, [setData]);
 
   const removeCategory = useCallback((id: string) => {
-    // every room number that belongs to this category, base + custom
     const doomedNumbers = [
       ...baseRooms.filter((r) => r.category === id).map((r) => r.number),
       ...((data.extraRooms ?? []).filter((r) => r.category === id).map((r) => r.number)),
@@ -163,7 +180,11 @@ export function HotelGridProvider({ children }: { children: React.ReactNode }) {
       return {
         ...prev,
         removedCategoryIds: Array.from(new Set([...(prev.removedCategoryIds ?? []), id])),
-        removedRoomNumbers: Array.from(new Set([...(prev.removedRoomNumbers ?? []), ...doomedNumbers])),
+        // hide base rooms of this category; custom rooms are hard-deleted below
+        removedRoomNumbers: Array.from(new Set([
+          ...(prev.removedRoomNumbers ?? []),
+          ...doomedNumbers.filter((n) => baseRooms.some((b) => b.number === n)),
+        ])),
         extraCategories: (prev.extraCategories ?? []).filter((c) => c.id !== id),
         extraRooms: (prev.extraRooms ?? []).filter((r) => r.category !== id),
         categoryRates: nextRates,
@@ -171,26 +192,48 @@ export function HotelGridProvider({ children }: { children: React.ReactNode }) {
     });
   }, [baseRooms, data.extraRooms, setData]);
 
+  /**
+   * NO uniqueness restriction any more.
+   * Creating a room number always succeeds: it is (re)assigned to the chosen
+   * category, it is wiped from `removedRoomNumbers`, and any duplicate custom
+   * entry for the same number is replaced instead of stacking up.
+   */
   const addRoom = useCallback((categoryId: string, roomNumber: number) => {
-    if (!Number.isFinite(roomNumber) || roomNumber <= 0) return { ok: false, reason: 'invalid' as const };
-    const baseNumbers = new Set(baseRooms.map((r) => r.number));
-    const extraNumbers = new Set((data.extraRooms ?? []).map((r) => r.number));
-    const isTaken = extraNumbers.has(roomNumber) || (baseNumbers.has(roomNumber) && !removedRoomNumbers.has(roomNumber));
-    if (isTaken) return { ok: false, reason: 'exists' as const };
-    setData((prev) => ({
-      ...prev,
-      extraRooms: [...(prev.extraRooms ?? []), { number: roomNumber, category: categoryId as RoomCategory }],
-    }));
-    return { ok: true };
-  }, [baseRooms, data.extraRooms, removedRoomNumbers, setData]);
+    const num = Math.floor(Number(roomNumber));
+    if (!Number.isFinite(num) || num <= 0) return { ok: false, reason: 'invalid' as const };
+    if (!categoryId) return { ok: false, reason: 'invalid' as const };
 
+    const isBaseNumber = baseRooms.some((r) => r.number === num);
+    setData((prev) => {
+      const extras = (prev.extraRooms ?? []).filter((r) => r.number !== num);
+      extras.push({ number: num, category: categoryId as RoomCategory });
+      const removed = new Set(prev.removedRoomNumbers ?? []);
+      // a base number keeps its "hidden" flag so the explicit custom entry wins
+      // (no duplicate row); a non-base number is fully un-deleted.
+      if (isBaseNumber) removed.add(num); else removed.delete(num);
+      return {
+        ...prev,
+        extraRooms: extras.sort((a, b) => a.number - b.number),
+        removedRoomNumbers: Array.from(removed).sort((a, b) => a - b),
+      };
+    });
+    return { ok: true };
+  }, [baseRooms, setData]);
+
+  /** Hard delete: the room disappears from the shared Supabase state entirely. */
   const removeRoom = useCallback((roomNumber: number) => {
-    setData((prev) => ({
-      ...prev,
-      extraRooms: (prev.extraRooms ?? []).filter((r) => r.number !== roomNumber),
-      removedRoomNumbers: Array.from(new Set([...(prev.removedRoomNumbers ?? []), roomNumber])),
-    }));
-  }, [setData]);
+    const num = Math.floor(Number(roomNumber));
+    const isBaseNumber = baseRooms.some((r) => r.number === num);
+    setData((prev) => {
+      const removed = new Set(prev.removedRoomNumbers ?? []);
+      if (isBaseNumber) removed.add(num); else removed.delete(num);
+      return {
+        ...prev,
+        extraRooms: (prev.extraRooms ?? []).filter((r) => r.number !== num),
+        removedRoomNumbers: Array.from(removed).sort((a, b) => a - b),
+      };
+    });
+  }, [baseRooms, setData]);
 
   const setCategoryRate = useCallback((categoryId: string, rate: CategoryRate) => {
     const maxG = baseCategories.find((c) => c.id === categoryId)?.maxGuests

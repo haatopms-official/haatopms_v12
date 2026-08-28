@@ -30,9 +30,12 @@ export function AddCategoryDialog({ open, onClose }: AddCategoryDialogProps) {
     }
   }, [open]);
 
+  const previewName = name.trim();
+  const previewShort = (short.trim() || previewName.slice(0, 6)).toUpperCase();
+
   const handleCreate = () => {
-    if (!name.trim()) return;
-    addCategory({ name: name.trim(), short: short.trim(), maxGuests });
+    if (!previewName) return;
+    addCategory({ name: previewName, short: short.trim(), maxGuests });
     toast.success(t('categoryCreated'));
     onClose();
   };
@@ -99,6 +102,33 @@ export function AddCategoryDialog({ open, onClose }: AddCategoryDialogProps) {
                 />
               </div>
             </div>
+
+            {/* LIVE PREVIEW — exactly how the row will look on the grid:
+                big full name, short code as a small badge underneath. */}
+            {previewName && (
+              <div className="rounded-2xl border border-primary/20 bg-primary/5 px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/20 text-primary">
+                    <Layers className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-base font-extrabold leading-tight text-foreground">
+                      {previewName}
+                    </div>
+                    <div className="mt-0.5 flex items-center gap-2">
+                      <span className="rounded-md bg-primary/15 px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-primary">
+                        {previewShort}
+                      </span>
+                      <span className="text-[11px] font-semibold text-muted-foreground">
+                        <Users className="mr-1 inline h-3 w-3" />
+                        {Math.max(1, Math.floor(maxGuests || 1))}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" size="sm" onClick={onClose} className="rounded-xl">
                 {t('cancel')}
@@ -106,7 +136,7 @@ export function AddCategoryDialog({ open, onClose }: AddCategoryDialogProps) {
               <Button
                 size="sm"
                 onClick={handleCreate}
-                disabled={!name.trim()}
+                disabled={!previewName}
                 className="rounded-xl shadow-md hover:shadow-lg hover:scale-105 transition-all"
               >
                 {t('create')}
@@ -145,9 +175,11 @@ export function AddRoomDialog({ open, onClose, category }: AddRoomDialogProps) {
       return;
     }
     if (!categoryId) return;
+    // No "already exists" path any more — any number is always accepted and is
+    // (re)assigned to the selected category.
     const result = addRoom(categoryId, num);
     if (!result.ok) {
-      toast.error(result.reason === 'exists' ? t('roomExists') : t('invalidNumber'));
+      toast.error(t('invalidNumber'));
       return;
     }
     toast.success(t('roomCreated'));
@@ -207,10 +239,10 @@ export function AddRoomDialog({ open, onClose, category }: AddRoomDialogProps) {
                   {categories.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
                       <span className="flex items-center gap-2">
-                        <span className="text-[10px] font-black uppercase tracking-wider text-primary/70">
+                        <span className="font-medium">{c.label[lang]}</span>
+                        <span className="rounded bg-primary/10 px-1 text-[10px] font-black uppercase tracking-wider text-primary/70">
                           {c.short}
                         </span>
-                        <span className="font-medium">{c.label[lang]}</span>
                       </span>
                     </SelectItem>
                   ))}

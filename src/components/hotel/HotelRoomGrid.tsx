@@ -174,10 +174,10 @@ type DeleteTarget =
   | { type: 'guest'; roomNumber: number; personIdx: number; isExtra: boolean };
 
 type ChangeRoomMode = { booking: Booking; categoryId: string } | null;
-
+// Big line = FULL NAME. The short code is rendered separately as a badge,
+// so it must NOT be the primary value here (that caused the double display).
 const categoryDisplay = (cat: { label: Record<string, string>; short?: string }, lang: string) =>
-  cat.short || cat.label[lang] || cat.label.en || '';
-
+  cat.label?.[lang] || cat.label?.en || cat.short || '';
 /**
  * Drag-overlay imperative API: parent updates this without React re-rendering
  * the grid. Internally uses CSS transforms for 60fps drag selection.
@@ -2203,8 +2203,12 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
                           {categoryDisplay(cat, lang)}
                         </span>
                         <span className="text-[9px] text-muted-foreground font-semibold flex flex-wrap items-center gap-1 leading-tight">
-                          <span className="uppercase tracking-wider text-primary/70 font-bold">{cat.short}</span>
-                          <span className="opacity-60">·</span>
+{cat.short && cat.short.toLowerCase() !== categoryDisplay(cat, lang).toLowerCase() && (
+  <>
+    <span className="rounded bg-primary/15 px-1 uppercase tracking-wider text-primary/80 font-black">{cat.short}</span>
+    <span className="opacity-60">·</span>
+  </>
+)}
                           <span>{catRooms.length} {t('rooms')}</span>
                           {personCount > 0 && (
                             <span className="inline-flex items-center gap-0.5 text-primary/80">
@@ -2296,7 +2300,9 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
                               <span className="text-[10px] font-bold text-foreground leading-tight truncate">
                                   {categoryDisplay(cat, lang)}
                               </span>
-                              <span className="text-[9px] text-muted-foreground font-semibold truncate">{cat.short}</span>
+                              {cat.short && cat.short.toLowerCase() !== categoryDisplay(cat, lang).toLowerCase() && (
+  <span className="text-[9px] text-muted-foreground font-semibold truncate">{cat.short}</span>
+)}
                             </div>
                             {hasPersonRows && (
                               <button
